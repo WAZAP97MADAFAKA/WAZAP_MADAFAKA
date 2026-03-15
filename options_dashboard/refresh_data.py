@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from options_config import (
+from options_dashboard.options_config import (
     DEFAULT_TICKERS,
     DEFAULT_EXPIRATION_WEIGHTS,
     DEFAULT_MAX_DISTANCE,
