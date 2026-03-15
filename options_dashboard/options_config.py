@@ -1,8 +1,8 @@
 # ===== Original single-ticker config used by oi_levels.py, gamma_exposure.py, etc. =====
 TICKER = "SPY"
 EXPIRATION_WEIGHTS = [0.5, 0.3, 0.2]
-MAX_DISTANCE = 12
-NUM_LEVELS = 3
+MAX_DISTANCE = 30
+NUM_LEVELS = 15
 REFRESH_SECONDS = 300
 
 # ===== Dashboard/default multi-ticker config =====
