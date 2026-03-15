@@ -13,7 +13,7 @@ from options_dashboard.options_config import (
     REFRESH_STATUS_FILE,
     NY_TIMEZONE,
 )
-from oi_levels import get_oi_levels
+from options_dashboard.oi_levels import get_oi_levels
 
 
 def ensure_dirs():
