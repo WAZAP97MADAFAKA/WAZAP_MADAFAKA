@@ -127,7 +127,7 @@ max_distance = st.sidebar.number_input(
 num_levels = st.sidebar.number_input(
     "Num Levels",
     min_value=1,
-    max_value=10,
+    max_value=100,
     value=int(settings["num_levels"]),
     step=1,
 )
