@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-from options_dashboard.options_config import (
+from options_config import (
     DEFAULT_TICKERS,
     DEFAULT_EXPIRATION_WEIGHTS,
     DEFAULT_MAX_DISTANCE,
@@ -17,7 +17,7 @@ from options_dashboard.options_config import (
     REFRESH_STATUS_FILE,
     NY_TIMEZONE,
 )
-from options_dashboard.refresh_data import refresh_oi_data
+from refresh_data import refresh_oi_data
 
 
 st.set_page_config(page_title="OI Dashboard", layout="wide")

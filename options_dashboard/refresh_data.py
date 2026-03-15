@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from options_dashboard.options_config import (
+from options_config import (
     DEFAULT_TICKERS,
     DEFAULT_EXPIRATION_WEIGHTS,
     DEFAULT_MAX_DISTANCE,
@@ -13,7 +13,7 @@ from options_dashboard.options_config import (
     REFRESH_STATUS_FILE,
     NY_TIMEZONE,
 )
-from options_dashboard.oi_levels import get_oi_levels
+from oi_levels import get_oi_levels
 
 
 def ensure_dirs():

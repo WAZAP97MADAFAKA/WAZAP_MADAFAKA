@@ -1,8 +1,8 @@
 import pandas as pd
 import yfinance as yf
 
-from options_dashboard.options_config import TICKER, EXPIRATION_WEIGHTS, MAX_DISTANCE, NUM_LEVELS
-from options_dashboard.options_common import (
+from options_config import TICKER, EXPIRATION_WEIGHTS, MAX_DISTANCE, NUM_LEVELS
+from options_common import (
     get_spot_price,
     get_first_n_expirations,
     filter_local_calls,

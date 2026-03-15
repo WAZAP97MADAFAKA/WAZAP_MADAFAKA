@@ -1,7 +1,7 @@
 import pandas as pd
 
-from options_dashboard.options_config import TICKER, EXPIRATION_WEIGHTS, MAX_DISTANCE, NUM_LEVELS
-from options_dashboard.options_common import (
+from options_config import TICKER, EXPIRATION_WEIGHTS, MAX_DISTANCE, NUM_LEVELS
+from options_common import (
     get_weighted_option_data,
     get_local_range,
 )
