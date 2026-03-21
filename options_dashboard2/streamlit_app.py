@@ -1,7 +1,5 @@
 import json
 import os
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -15,7 +13,6 @@ from options_config import (
     DATA_CACHE_DIR,
     SETTINGS_FILE,
     REFRESH_STATUS_FILE,
-    NY_TIMEZONE,
 )
 from refresh_data import refresh_oi_data
 from gamma_exposure import get_gamma_levels
@@ -38,6 +35,38 @@ def cached_gamma(ticker, weights, max_distance, num_levels):
         max_distance=max_distance,
         num_levels=num_levels,
     )
+
+
+def get_regime_label(spot, gamma_flip):
+    if gamma_flip is None:
+        return "NO FLIP DETECTED", "#9E9E9E", None
+
+    distance_pct = abs(spot - gamma_flip) / spot * 100
+
+    if distance_pct < 0.5:
+        return "CHOP / TRANSITION", "#FFA726", distance_pct
+
+    if distance_pct < 1.5:
+        if spot > gamma_flip:
+            return "MODERATE BULLISH", "#66BB6A", distance_pct
+        return "MODERATE BEARISH", "#EF5350", distance_pct
+
+    if spot > gamma_flip:
+        return "STRONG BULLISH", "#00C853", distance_pct
+    return "STRONG BEARISH", "#D50000", distance_pct
+
+
+def get_gamma_mode_label(spot, gamma_flip):
+    if gamma_flip is None:
+        return "NO NEARBY FLIP → FOLLOW OVERALL BIAS", "#757575"
+
+    if spot > gamma_flip:
+        return "LONG GAMMA MODE → FADE MOVES / BUY DIPS / SELL RIPS", "#1E88E5"
+
+    if spot < gamma_flip:
+        return "SHORT GAMMA MODE → FOLLOW MOMENTUM / BUY BREAKOUTS / SELL BREAKDOWNS", "#8E24AA"
+
+    return "AT FLIP → TRANSITION / REDUCE SIZE", "#FB8C00"
 
 
 def ensure_dirs():
@@ -114,6 +143,53 @@ def render_gamma_section(gamma):
     c2.metric("Gamma Flip", gamma.get("gamma_flip", "None"))
     c3.metric("Gamma Key Level", gamma.get("key_level", "N/A"))
     c4.metric("Regime", gamma.get("regime", "N/A"))
+
+    regime_label, regime_color, distance_pct = get_regime_label(
+        gamma.get("spot"),
+        gamma.get("gamma_flip"),
+    )
+
+    gamma_mode_label, gamma_mode_color = get_gamma_mode_label(
+        gamma.get("spot"),
+        gamma.get("gamma_flip"),
+    )
+
+    st.markdown(
+        f"""
+        <div style="
+            background-color:{regime_color};
+            padding:12px;
+            border-radius:10px;
+            margin-bottom:12px;
+            color:white;
+            font-weight:bold;
+            font-size:22px;
+            text-align:center;">
+            REGIME STRENGTH: {regime_label}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        f"""
+        <div style="
+            background-color:{gamma_mode_color};
+            padding:12px;
+            border-radius:10px;
+            margin-bottom:12px;
+            color:white;
+            font-weight:bold;
+            font-size:20px;
+            text-align:center;">
+            GAMMA MODE: {gamma_mode_label}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    if distance_pct is not None:
+        st.write(f"**Distance from Flip:** {distance_pct:.2f}%")
 
     res = gamma["top_resistances"] if isinstance(gamma["top_resistances"], pd.DataFrame) else pd.DataFrame(gamma["top_resistances"])
     sup = gamma["top_supports"] if isinstance(gamma["top_supports"], pd.DataFrame) else pd.DataFrame(gamma["top_supports"])
@@ -199,7 +275,7 @@ num_levels_value = max(1, min(10, num_levels_value))
 num_levels = st.sidebar.number_input(
     "Num Levels",
     min_value=1,
-    max_value=100,
+    max_value=10,
     value=num_levels_value,
     step=1,
 )
@@ -223,7 +299,6 @@ if save_settings_btn:
     save_json(SETTINGS_FILE, payload)
     st.sidebar.success("Settings saved.")
 
-# Manual refresh only
 if manual_refresh_btn:
     try:
         refresh_oi_data()
