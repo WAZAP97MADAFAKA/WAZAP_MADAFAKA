@@ -264,6 +264,6 @@ confluence = build_confluence_from_results(
     oi=oi_for_confluence,
     gamma=gamma,
 )
-    render_confluence_section(confluence)
+render_confluence_section(confluence)
 
-    st.divider()
+st.divider()
