@@ -177,10 +177,11 @@ settings = load_settings()
 
 st.sidebar.header("Settings")
 
-tickers = st.sidebar.multiselect(
-    "Tickers",
+tickers = st.sidebar.selectbox(
+    "Ticker",
     options=["SPY", "QQQ"],
-    default=settings["tickers"],
+    index = 0 if "SPY" in settings["tickers]"]
+    else 1
 )
 
 weights_text = st.sidebar.text_input(
@@ -232,7 +233,7 @@ status = load_json(REFRESH_STATUS_FILE, {})
 st.sidebar.write("### Last OI Refresh")
 st.sidebar.write(status.get("last_refresh_ny", "No refresh yet"))
 
-for ticker in tickers or DEFAULT_TICKERS:
+for ticker in [ticker]:
     st.header(f"{ticker}")
 
     oi_path = os.path.join(DATA_CACHE_DIR, f"oi_{ticker}.json")
