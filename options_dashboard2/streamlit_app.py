@@ -89,6 +89,57 @@ def grade_color(value):
     return mapping.get(value, "#616161")
 
 
+def build_level_strength_card(row):
+    grade = row.get("grade", "")
+    gamma_strength = row.get("gamma_strength", "")
+    side = row.get("side", "")
+    level = row.get("level", "")
+
+    if gamma_strength == "STRONG_GAMMA_BACKED":
+        return f"{grade} | {side} {level} | VERY STRONG"
+    if gamma_strength == "GAMMA_BACKED":
+        return f"{grade} | {side} {level} | BACKED"
+    if gamma_strength == "WEAK_GAMMA_SUPPORT":
+        return f"{grade} | {side} {level} | WEAK SUPPORT"
+    if gamma_strength == "WEAK_GAMMA_RESISTANCE":
+        return f"{grade} | {side} {level} | WEAK RESISTANCE"
+    if gamma_strength == "NO_GAMMA_BACKING":
+        return f"{grade} | {side} {level} | LIKELY FAIL"
+    return f"{grade} | {side} {level}"
+
+
+def style_trade_quality_table(df: pd.DataFrame):
+    def style_grade(val):
+        color = grade_color(val)
+        return f"background-color: {color}; color: white; font-weight: bold;"
+
+    def style_gamma_strength(val):
+        color = gamma_strength_color(val)
+        return f"background-color: {color}; color: white; font-weight: bold;"
+
+    def style_level_strength_card(val):
+        text = str(val)
+        if "VERY STRONG" in text:
+            return "background-color: #1B5E20; color: white; font-weight: bold;"
+        if "BACKED" in text:
+            return "background-color: #2E7D32; color: white; font-weight: bold;"
+        if "WEAK SUPPORT" in text:
+            return "background-color: #F57C00; color: white; font-weight: bold;"
+        if "WEAK RESISTANCE" in text:
+            return "background-color: #E65100; color: white; font-weight: bold;"
+        if "LIKELY FAIL" in text:
+            return "background-color: #B71C1C; color: white; font-weight: bold;"
+        return ""
+
+    styled = (
+        df.style
+        .map(style_grade, subset=["grade"])
+        .map(style_gamma_strength, subset=["gamma_strength"])
+        .map(style_level_strength_card, subset=["level_strength_card"])
+    )
+    return styled
+
+
 def ensure_dirs():
     os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 
@@ -229,71 +280,6 @@ def render_gamma_section(gamma):
         st.dataframe(sup, use_container_width=True)
 
 
-def render_strength_legend():
-    st.markdown("### Gamma Strength Legend")
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        st.markdown(
-            "<div style='background-color:#1B5E20;padding:10px;border-radius:8px;color:white;font-weight:bold;text-align:center;'>STRONG_GAMMA_BACKED</div>",
-            unsafe_allow_html=True,
-        )
-        st.caption("Best alignment with gamma regime")
-
-    with c2:
-        st.markdown(
-            "<div style='background-color:#2E7D32;padding:10px;border-radius:8px;color:white;font-weight:bold;text-align:center;'>GAMMA_BACKED</div>",
-            unsafe_allow_html=True,
-        )
-        st.caption("Has nearby gamma support/resistance")
-
-    with c3:
-        st.markdown(
-            "<div style='background-color:#B71C1C;padding:10px;border-radius:8px;color:white;font-weight:bold;text-align:center;'>NO_GAMMA_BACKING</div>",
-            unsafe_allow_html=True,
-        )
-        st.caption("Most likely to fail")
-
-
-def render_level_badges(levels_df):
-    for _, row in levels_df.iterrows():
-        strength = row.get("gamma_strength", "UNKNOWN")
-        grade = row.get("grade", "")
-        side = row.get("side", "")
-        level = row.get("level", "")
-        reasons = row.get("reasons", "")
-
-        strength_bg = gamma_strength_color(strength)
-        grade_bg = grade_color(grade)
-
-        st.markdown(
-            f"""
-            <div style="
-                border:1px solid #444;
-                border-radius:10px;
-                padding:10px;
-                margin-bottom:10px;
-                background-color:#111;">
-                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-                    <div style="background-color:{grade_bg}; padding:6px 10px; border-radius:8px; color:white; font-weight:bold;">
-                        {grade}
-                    </div>
-                    <div style="background-color:{strength_bg}; padding:6px 10px; border-radius:8px; color:white; font-weight:bold;">
-                        {strength}
-                    </div>
-                    <div style="padding:6px 10px; border-radius:8px; background-color:#263238; color:white; font-weight:bold;">
-                        {side} @ {level}
-                    </div>
-                </div>
-                <div style="margin-top:8px; color:#DDD;">
-                    {reasons}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-
 def render_confluence_section(confluence):
     st.subheader("Confluence Engine")
 
@@ -310,18 +296,36 @@ def render_confluence_section(confluence):
         levels = pd.DataFrame(levels)
 
     if not levels.empty:
-        render_strength_legend()
-
         st.write("### Trade Quality Levels")
-        st.dataframe(levels, use_container_width=True)
 
-        st.write("### Level Strength Cards")
-        render_level_badges(levels)
+        display_levels = levels.copy()
+
+        # Keep exactly 6 columns, with the 6th being the card column
+        display_levels["level_strength_card"] = display_levels.apply(build_level_strength_card, axis=1)
+
+        column_order = [
+            "side",
+            "level",
+            "gamma_match",
+            "gamma_strength",
+            "grade",
+            "level_strength_card",
+        ]
+
+        # Only keep columns that exist
+        column_order = [col for col in column_order if col in display_levels.columns]
+        display_levels = display_levels[column_order]
+
+        st.dataframe(
+            style_trade_quality_table(display_levels),
+            use_container_width=True,
+            hide_index=True,
+        )
 
         aplus = levels[levels["grade"] == "A+"]
         if not aplus.empty:
             st.success("A+ setups detected")
-            st.dataframe(aplus, use_container_width=True)
+            st.dataframe(aplus, use_container_width=True, hide_index=True)
         else:
             st.info("No A+ setups right now.")
 
@@ -330,7 +334,7 @@ def render_confluence_section(confluence):
         ]
         if not weak_levels.empty:
             st.warning("Weak levels detected — these are more likely to fail.")
-            st.dataframe(weak_levels, use_container_width=True)
+            st.dataframe(weak_levels, use_container_width=True, hide_index=True)
     else:
         st.warning("No confluence levels found.")
 
