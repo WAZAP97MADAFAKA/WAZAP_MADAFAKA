@@ -1,9 +1,5 @@
 import pandas as pd
 
-from oi_levels import get_oi_levels
-from gamma_exposure import get_gamma_levels
-from options_config import DEFAULT_EXPIRATION_WEIGHTS, DEFAULT_MAX_DISTANCE, DEFAULT_NUM_LEVELS
-
 
 def nearest_level_match(level, levels, tolerance):
     if not levels:
@@ -24,31 +20,7 @@ def classify_score(score):
     return "SKIP"
 
 
-def build_confluence_levels(
-    ticker_symbol: str,
-    oi_fixed_spot: float | None = None,
-    weights=None,
-    max_distance: float = DEFAULT_MAX_DISTANCE,
-    num_levels: int = DEFAULT_NUM_LEVELS,
-):
-    if weights is None:
-        weights = DEFAULT_EXPIRATION_WEIGHTS
-
-    oi = get_oi_levels(
-        ticker_symbol=ticker_symbol,
-        weights=weights,
-        max_distance=max_distance,
-        num_levels=num_levels,
-        fixed_spot=oi_fixed_spot,
-    )
-
-    gamma = get_gamma_levels(
-        ticker_symbol=ticker_symbol,
-        weights=weights,
-        max_distance=max_distance,
-        num_levels=num_levels,
-    )
-
+def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
     spot = gamma["spot"]
     gamma_flip = gamma["gamma_flip"]
     regime = gamma["regime"]
@@ -75,7 +47,7 @@ def build_confluence_levels(
             score += 15
             reasons.append("Above gamma flip")
 
-        if abs(spot - level) <= max_distance / 2:
+        if abs(spot - level) <= 6:
             score += 10
             reasons.append("Near current spot")
 
@@ -104,7 +76,7 @@ def build_confluence_levels(
             score += 15
             reasons.append("Below gamma flip")
 
-        if abs(spot - level) <= max_distance / 2:
+        if abs(spot - level) <= 6:
             score += 10
             reasons.append("Near current spot")
 
@@ -135,13 +107,11 @@ def build_confluence_levels(
     return {
         "ticker": ticker_symbol,
         "spot": spot,
-        "oi_fixed_spot": oi_fixed_spot,
+        "oi_fixed_spot": oi.get("spot"),
         "gamma_flip": gamma_flip,
         "regime": regime,
         "oi_key_level": oi["key_level"],
         "gamma_key_level": gamma["key_level"],
         "levels": scored_df,
         "skip_rules": skip_rules,
-        "oi": oi,
-        "gamma": gamma,
     }

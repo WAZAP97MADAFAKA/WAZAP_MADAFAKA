@@ -19,14 +19,14 @@ from options_config import (
 )
 from refresh_data import refresh_oi_data
 from gamma_exposure import get_gamma_levels
-from confluence_levels import build_confluence_levels
+from confluence_levels import build_confluence_levels_from_results
 
 
 st.set_page_config(page_title="Options Dashboard", layout="wide")
 st.title("Options Dashboard")
 st.caption("Static OI from 9:30 AM NY open + dynamic Gamma + confluence scoring")
 
-st_autorefresh(interval=300000, key="dashboard_refresh") # 5 minutes
+st_autorefresh(interval=900000, key="dashboard_refresh") # 15 minutes
 
 
 def ensure_dirs():
@@ -228,9 +228,6 @@ if manual_refresh_btn:
     st.sidebar.success("OI refresh completed.")
 
 status = load_json(REFRESH_STATUS_FILE, {})
-if should_force_refresh(status):
-    refresh_oi_data()
-    status = load_json(REFRESH_STATUS_FILE, {})
 
 st.sidebar.write("### Last OI Refresh")
 st.sidebar.write(status.get("last_refresh_ny", "No refresh yet"))
@@ -255,13 +252,18 @@ for ticker in tickers or DEFAULT_TICKERS:
     )
     render_gamma_section(gamma)
 
-    confluence = build_confluence_levels(
-        ticker_symbol=ticker,
-        oi_fixed_spot=oi_payload.get("oi_fixed_spot"),
-        weights=weights,
-        max_distance=max_distance,
-        num_levels=int(num_levels),
-    )
+    oi_for_confluence = {
+    "key_level": oi_payload.get("key_level"),
+    "top_resistances": pd.DataFrame(oi_payload.get("top_resistances", [])),
+    "top_supports": pd.DataFrame(oi_payload.get("top_supports", [])),
+    "spot": oi_payload.get("oi_fixed_spot"),
+}
+
+confluence = build_confluence_from_results(
+    ticker_symbol=ticker,
+    oi=oi_for_confluence,
+    gamma=gamma,
+)
     render_confluence_section(confluence)
 
     st.divider()
