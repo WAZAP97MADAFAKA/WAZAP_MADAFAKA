@@ -71,6 +71,7 @@ def get_gamma_mode_label(spot, gamma_flip):
 def gamma_strength_color(value):
     mapping = {
         "STRONG_GAMMA_BACKED": "#1B5E20",
+        "STRONG_BUT_VOLATILE": "#1565C0",
         "GAMMA_BACKED": "#2E7D32",
         "WEAK_GAMMA_SUPPORT": "#F57C00",
         "WEAK_GAMMA_RESISTANCE": "#E65100",
@@ -97,6 +98,8 @@ def build_level_strength_card(row):
 
     if gamma_strength == "STRONG_GAMMA_BACKED":
         return f"{grade} | {side} {level} | VERY STRONG"
+    if gamma_strength == "STRONG_BUT_VOLATILE":
+        return f"{grade} | {side} {level} | STRONG BUT VOLATILE"
     if gamma_strength == "GAMMA_BACKED":
         return f"{grade} | {side} {level} | BACKED"
     if gamma_strength == "WEAK_GAMMA_SUPPORT":
@@ -121,6 +124,8 @@ def style_trade_quality_table(df: pd.DataFrame):
         text = str(val)
         if "VERY STRONG" in text:
             return "background-color: #1B5E20; color: white; font-weight: bold;"
+        if "STRONG BUT VOLATILE" in text:
+            return "background-color: #1565C0; color: white; font-weight: bold;"
         if "BACKED" in text:
             return "background-color: #2E7D32; color: white; font-weight: bold;"
         if "WEAK SUPPORT" in text:
@@ -299,8 +304,6 @@ def render_confluence_section(confluence):
         st.write("### Trade Quality Levels")
 
         display_levels = levels.copy()
-
-        # Keep exactly 6 columns, with the 6th being the card column
         display_levels["level_strength_card"] = display_levels.apply(build_level_strength_card, axis=1)
 
         column_order = [
@@ -311,8 +314,6 @@ def render_confluence_section(confluence):
             "grade",
             "level_strength_card",
         ]
-
-        # Only keep columns that exist
         column_order = [col for col in column_order if col in display_levels.columns]
         display_levels = display_levels[column_order]
 
@@ -335,6 +336,11 @@ def render_confluence_section(confluence):
         if not weak_levels.empty:
             st.warning("Weak levels detected — these are more likely to fail.")
             st.dataframe(weak_levels, use_container_width=True, hide_index=True)
+
+        volatile_levels = levels[levels["gamma_strength"] == "STRONG_BUT_VOLATILE"]
+        if not volatile_levels.empty:
+            st.info("Strong but volatile levels detected — these can react hard but may not be clean.")
+            st.dataframe(volatile_levels, use_container_width=True, hide_index=True)
     else:
         st.warning("No confluence levels found.")
 

@@ -20,24 +20,60 @@ def classify_score(score):
     return "SKIP"
 
 
-def classify_gamma_strength(side, has_match, gamma_flip, spot):
+def classify_gamma_strength(side, has_match, gamma_flip, spot, level_gex):
     if not has_match:
         return "NO_GAMMA_BACKING"
 
     if gamma_flip is None:
+        if side == "SUPPORT":
+            return "STRONG_BUT_VOLATILE" if level_gex < 0 else "GAMMA_BACKED"
+        if side == "RESISTANCE":
+            return "STRONG_BUT_VOLATILE" if level_gex < 0 else "GAMMA_BACKED"
         return "GAMMA_BACKED"
 
-    if side == "SUPPORT":
-        if spot > gamma_flip:
-            return "STRONG_GAMMA_BACKED"
-        return "WEAK_GAMMA_SUPPORT"
+    # Above flip = long gamma environment
+    if spot > gamma_flip:
+        if side == "SUPPORT":
+            if level_gex >= 0:
+                return "STRONG_GAMMA_BACKED"
+            return "STRONG_BUT_VOLATILE"
 
-    if side == "RESISTANCE":
-        if spot < gamma_flip:
-            return "STRONG_GAMMA_BACKED"
-        return "WEAK_GAMMA_RESISTANCE"
+        if side == "RESISTANCE":
+            if level_gex >= 0:
+                return "STRONG_GAMMA_BACKED"
+            return "WEAK_GAMMA_RESISTANCE"
+
+    # Below flip = short gamma environment
+    if spot < gamma_flip:
+        if side == "SUPPORT":
+            if level_gex < 0:
+                return "WEAK_GAMMA_SUPPORT"
+            return "WEAK_GAMMA_SUPPORT"
+
+        if side == "RESISTANCE":
+            if level_gex < 0:
+                return "STRONG_GAMMA_BACKED"
+            return "STRONG_BUT_VOLATILE"
 
     return "GAMMA_BACKED"
+
+
+def get_level_gex(level, gamma_df, tolerance):
+    if gamma_df is None or gamma_df.empty:
+        return None
+
+    exact = gamma_df[gamma_df["strike"] == level]
+    if not exact.empty:
+        row = exact.iloc[0]
+        if "weighted_gex" in row:
+            return float(row["weighted_gex"])
+
+    nearby = gamma_df[(gamma_df["strike"] - level).abs() <= tolerance]
+    if not nearby.empty and "weighted_gex" in nearby.columns:
+        nearest = nearby.iloc[(nearby["strike"] - level).abs().argsort()].iloc[0]
+        return float(nearest["weighted_gex"])
+
+    return None
 
 
 def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
@@ -52,6 +88,9 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
     gamma_supports = gamma["top_supports"]["strike"].tolist() if not gamma["top_supports"].empty else []
     gamma_resistances = gamma["top_resistances"]["strike"].tolist() if not gamma["top_resistances"].empty else []
 
+    gamma_supports_df = gamma["top_supports"] if isinstance(gamma["top_supports"], pd.DataFrame) else pd.DataFrame(gamma["top_supports"])
+    gamma_resistances_df = gamma["top_resistances"] if isinstance(gamma["top_resistances"], pd.DataFrame) else pd.DataFrame(gamma["top_resistances"])
+
     scored_rows = []
 
     for level in oi_supports:
@@ -63,6 +102,10 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
         if has_match:
             score += 30
             reasons.append(f"Gamma support nearby ({match})")
+
+        level_gex = get_level_gex(level, gamma_supports_df, tolerance)
+        if level_gex is not None:
+            reasons.append(f"Level GEX {level_gex:,.0f}")
 
         if gamma_flip is not None and spot > gamma_flip:
             score += 15
@@ -81,12 +124,23 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
             has_match=has_match,
             gamma_flip=gamma_flip,
             spot=spot,
+            level_gex=level_gex if level_gex is not None else 0.0,
         )
+
+        if gamma_strength == "STRONG_GAMMA_BACKED":
+            reasons.append("Regime and GEX support the level")
+        elif gamma_strength == "STRONG_BUT_VOLATILE":
+            reasons.append("Regime supports level, but local GEX is unstable")
+        elif gamma_strength == "WEAK_GAMMA_SUPPORT":
+            reasons.append("Gamma regime works against this support")
+        elif gamma_strength == "NO_GAMMA_BACKING":
+            reasons.append("No local gamma support found")
 
         scored_rows.append({
             "side": "SUPPORT",
             "level": level,
             "gamma_match": match,
+            "level_gex": level_gex,
             "gamma_strength": gamma_strength,
             "score": score,
             "grade": classify_score(score),
@@ -102,6 +156,10 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
         if has_match:
             score += 30
             reasons.append(f"Gamma resistance nearby ({match})")
+
+        level_gex = get_level_gex(level, gamma_resistances_df, tolerance)
+        if level_gex is not None:
+            reasons.append(f"Level GEX {level_gex:,.0f}")
 
         if gamma_flip is not None and spot < gamma_flip:
             score += 15
@@ -120,12 +178,23 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
             has_match=has_match,
             gamma_flip=gamma_flip,
             spot=spot,
+            level_gex=level_gex if level_gex is not None else 0.0,
         )
+
+        if gamma_strength == "STRONG_GAMMA_BACKED":
+            reasons.append("Regime and GEX support the level")
+        elif gamma_strength == "STRONG_BUT_VOLATILE":
+            reasons.append("Regime supports level, but local GEX is unstable")
+        elif gamma_strength == "WEAK_GAMMA_RESISTANCE":
+            reasons.append("Gamma regime works against this resistance")
+        elif gamma_strength == "NO_GAMMA_BACKING":
+            reasons.append("No local gamma resistance found")
 
         scored_rows.append({
             "side": "RESISTANCE",
             "level": level,
             "gamma_match": match,
+            "level_gex": level_gex,
             "gamma_strength": gamma_strength,
             "score": score,
             "grade": classify_score(score),
@@ -144,6 +213,7 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
         "Skip if price is too far from the next target level",
         "Skip weak support longs when below gamma flip",
         "Skip weak resistance shorts when above gamma flip",
+        "Be cautious with STRONG_BUT_VOLATILE levels because they can react sharply but not cleanly",
     ]
 
     return {
