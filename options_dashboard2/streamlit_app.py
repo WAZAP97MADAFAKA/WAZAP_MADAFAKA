@@ -26,8 +26,18 @@ st.set_page_config(page_title="Options Dashboard", layout="wide")
 st.title("Options Dashboard")
 st.caption("Static OI from 9:30 AM NY open + dynamic Gamma + confluence scoring")
 
-# 15 minutes instead of 5 to reduce Yahoo rate-limit issues
+# 15 minutes to reduce Yahoo rate-limit risk
 st_autorefresh(interval=900000, key="dashboard_refresh")
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_gamma(ticker, weights, max_distance, num_levels):
+    return get_gamma_levels(
+        ticker_symbol=ticker,
+        weights=weights,
+        max_distance=max_distance,
+        num_levels=num_levels,
+    )
 
 
 def ensure_dirs():
@@ -69,6 +79,7 @@ def load_settings():
 
 def render_oi_section(payload):
     st.subheader("Static OI Map")
+
     c1, c2, c3 = st.columns(3)
     c1.metric("OI Fixed Spot", payload.get("oi_fixed_spot", "N/A"))
     c2.metric("OI Key Level", payload.get("key_level", "N/A"))
@@ -97,6 +108,7 @@ def render_oi_section(payload):
 
 def render_gamma_section(gamma):
     st.subheader("Dynamic Gamma Map")
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Current Spot", gamma.get("spot", "N/A"))
     c2.metric("Gamma Flip", gamma.get("gamma_flip", "None"))
@@ -159,10 +171,10 @@ settings = load_settings()
 
 st.sidebar.header("Settings")
 
-ticker = st.sidebar.selectbox(
-    "Ticker",
+tickers = st.sidebar.multiselect(
+    "Tickers",
     options=["SPY", "QQQ"],
-    index=0 if "SPY" in settings["tickers"] else 1
+    default=settings["tickers"] if settings["tickers"] else ["SPY", "QQQ"],
 )
 
 weights_text = st.sidebar.text_input(
@@ -170,19 +182,25 @@ weights_text = st.sidebar.text_input(
     value=",".join(str(x) for x in settings["weights"]),
 )
 
+max_distance_value = float(settings["max_distance"])
+max_distance_value = max(1.0, min(100.0, max_distance_value))
+
 max_distance = st.sidebar.number_input(
     "Max Distance",
     min_value=1.0,
     max_value=100.0,
-    value=float(settings["max_distance"]),
+    value=max_distance_value,
     step=1.0,
 )
+
+num_levels_value = int(settings["num_levels"])
+num_levels_value = max(1, min(10, num_levels_value))
 
 num_levels = st.sidebar.number_input(
     "Num Levels",
     min_value=1,
-    max_value=100,
-    value=int(settings["num_levels"]),
+    max_value=10,
+    value=num_levels_value,
     step=1,
 )
 
@@ -197,7 +215,7 @@ except Exception:
 
 if save_settings_btn:
     payload = {
-        "tickers": [ticker],
+        "tickers": tickers or DEFAULT_TICKERS,
         "weights": weights,
         "max_distance": max_distance,
         "num_levels": int(num_levels),
@@ -205,7 +223,7 @@ if save_settings_btn:
     save_json(SETTINGS_FILE, payload)
     st.sidebar.success("Settings saved.")
 
-# Manual refresh only, no forced refresh on page load
+# Manual refresh only
 if manual_refresh_btn:
     try:
         refresh_oi_data()
@@ -217,22 +235,25 @@ status = load_json(REFRESH_STATUS_FILE, {})
 st.sidebar.write("### Last OI Refresh")
 st.sidebar.write(status.get("last_refresh_ny", "No refresh yet"))
 
-st.header(f"{ticker}")
+for ticker in (tickers or DEFAULT_TICKERS):
+    st.header(f"{ticker}")
 
-oi_path = os.path.join(DATA_CACHE_DIR, f"oi_{ticker}.json")
-oi_payload = load_json(oi_path, {})
+    oi_path = os.path.join(DATA_CACHE_DIR, f"oi_{ticker}.json")
+    oi_payload = load_json(oi_path, {})
 
-if not oi_payload:
-    st.warning(f"No OI cache found yet for {ticker}. Run the morning refresh first.")
-else:
+    if not oi_payload:
+        st.warning(f"No OI cache found yet for {ticker}. Run the morning refresh first.")
+        st.divider()
+        continue
+
     render_oi_section(oi_payload)
 
     try:
-        gamma = get_gamma_levels(
-            ticker_symbol=ticker,
-            weights=weights,
-            max_distance=max_distance,
-            num_levels=int(num_levels),
+        gamma = cached_gamma(
+            ticker,
+            tuple(weights),
+            float(max_distance),
+            int(num_levels),
         )
         render_gamma_section(gamma)
 
@@ -251,4 +272,6 @@ else:
         render_confluence_section(confluence)
 
     except Exception as e:
-        st.error(f"Gamma/Confluence error: {e}")
+        st.error(f"{ticker} gamma/confluence error: {e}")
+
+    st.divider()
