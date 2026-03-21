@@ -199,7 +199,7 @@ num_levels_value = max(1, min(10, num_levels_value))
 num_levels = st.sidebar.number_input(
     "Num Levels",
     min_value=1,
-    max_value=10,
+    max_value=100,
     value=num_levels_value,
     step=1,
 )
