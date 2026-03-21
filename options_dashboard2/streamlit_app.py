@@ -19,7 +19,7 @@ from options_config import (
 )
 from refresh_data import refresh_oi_data
 from gamma_exposure import get_gamma_levels
-from confluence_levels import build_confluence_levels_from_results
+from confluence_levels import build_confluence_from_results
 
 
 st.set_page_config(page_title="Options Dashboard", layout="wide")
