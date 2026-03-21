@@ -26,7 +26,8 @@ st.set_page_config(page_title="Options Dashboard", layout="wide")
 st.title("Options Dashboard")
 st.caption("Static OI from 9:30 AM NY open + dynamic Gamma + confluence scoring")
 
-st_autorefresh(interval=900000, key="dashboard_refresh") # 15 minutes
+# 15 minutes instead of 5 to reduce Yahoo rate-limit issues
+st_autorefresh(interval=900000, key="dashboard_refresh")
 
 
 def ensure_dirs():
@@ -64,25 +65,6 @@ def load_settings():
         "max_distance": saved.get("max_distance", DEFAULT_MAX_DISTANCE),
         "num_levels": saved.get("num_levels", DEFAULT_NUM_LEVELS),
     }
-
-
-def should_force_refresh(status: dict) -> bool:
-    now_ny = datetime.now(ZoneInfo(NY_TIMEZONE))
-    if now_ny.weekday() >= 5:
-        return False
-    if (now_ny.hour, now_ny.minute) < (9, 30):
-        return False
-
-    last_refresh = status.get("last_refresh_ny")
-    if not last_refresh:
-        return True
-
-    try:
-        last_dt = datetime.fromisoformat(last_refresh)
-    except Exception:
-        return True
-
-    return last_dt.date() != now_ny.date()
 
 
 def render_oi_section(payload):
@@ -177,11 +159,10 @@ settings = load_settings()
 
 st.sidebar.header("Settings")
 
-tickers = st.sidebar.selectbox(
+ticker = st.sidebar.selectbox(
     "Ticker",
     options=["SPY", "QQQ"],
-    index = 0 if "SPY" in settings["tickers]"]
-    else 1
+    index=0 if "SPY" in settings["tickers"] else 1
 )
 
 weights_text = st.sidebar.text_input(
@@ -200,7 +181,7 @@ max_distance = st.sidebar.number_input(
 num_levels = st.sidebar.number_input(
     "Num Levels",
     min_value=1,
-    max_value=100,
+    max_value=10,
     value=int(settings["num_levels"]),
     step=1,
 )
@@ -216,7 +197,7 @@ except Exception:
 
 if save_settings_btn:
     payload = {
-        "tickers": tickers or DEFAULT_TICKERS,
+        "tickers": [ticker],
         "weights": weights,
         "max_distance": max_distance,
         "num_levels": int(num_levels),
@@ -224,47 +205,50 @@ if save_settings_btn:
     save_json(SETTINGS_FILE, payload)
     st.sidebar.success("Settings saved.")
 
+# Manual refresh only, no forced refresh on page load
 if manual_refresh_btn:
-    refresh_oi_data()
-    st.sidebar.success("OI refresh completed.")
+    try:
+        refresh_oi_data()
+        st.sidebar.success("OI refresh completed.")
+    except Exception as e:
+        st.sidebar.error(f"OI refresh failed: {e}")
 
 status = load_json(REFRESH_STATUS_FILE, {})
-
 st.sidebar.write("### Last OI Refresh")
 st.sidebar.write(status.get("last_refresh_ny", "No refresh yet"))
 
-for ticker in [ticker]:
-    st.header(f"{ticker}")
+st.header(f"{ticker}")
 
-    oi_path = os.path.join(DATA_CACHE_DIR, f"oi_{ticker}.json")
-    oi_payload = load_json(oi_path, {})
+oi_path = os.path.join(DATA_CACHE_DIR, f"oi_{ticker}.json")
+oi_payload = load_json(oi_path, {})
 
-    if not oi_payload:
-        st.warning(f"No OI cache found yet for {ticker}.")
-        continue
-
+if not oi_payload:
+    st.warning(f"No OI cache found yet for {ticker}. Run the morning refresh first.")
+else:
     render_oi_section(oi_payload)
 
-    gamma = get_gamma_levels(
-        ticker_symbol=ticker,
-        weights=weights,
-        max_distance=max_distance,
-        num_levels=int(num_levels),
-    )
-    render_gamma_section(gamma)
+    try:
+        gamma = get_gamma_levels(
+            ticker_symbol=ticker,
+            weights=weights,
+            max_distance=max_distance,
+            num_levels=int(num_levels),
+        )
+        render_gamma_section(gamma)
 
-    oi_for_confluence = {
-    "key_level": oi_payload.get("key_level"),
-    "top_resistances": pd.DataFrame(oi_payload.get("top_resistances", [])),
-    "top_supports": pd.DataFrame(oi_payload.get("top_supports", [])),
-    "spot": oi_payload.get("oi_fixed_spot"),
-}
+        oi_for_confluence = {
+            "key_level": oi_payload.get("key_level"),
+            "top_resistances": pd.DataFrame(oi_payload.get("top_resistances", [])),
+            "top_supports": pd.DataFrame(oi_payload.get("top_supports", [])),
+            "spot": oi_payload.get("oi_fixed_spot"),
+        }
 
-confluence = build_confluence_from_results(
-    ticker_symbol=ticker,
-    oi=oi_for_confluence,
-    gamma=gamma,
-)
-    render_confluence_section(confluence)
+        confluence = build_confluence_from_results(
+            ticker_symbol=ticker,
+            oi=oi_for_confluence,
+            gamma=gamma,
+        )
+        render_confluence_section(confluence)
 
-    st.divider()
+    except Exception as e:
+        st.error(f"Gamma/Confluence error: {e}")
