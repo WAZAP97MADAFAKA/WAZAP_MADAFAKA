@@ -23,7 +23,6 @@ st.set_page_config(page_title="Options Dashboard", layout="wide")
 st.title("Options Dashboard")
 st.caption("Static OI from 9:30 AM NY open + dynamic Gamma + confluence scoring")
 
-# 15 minutes to reduce Yahoo rate-limit risk
 st_autorefresh(interval=900000, key="dashboard_refresh")
 
 
@@ -67,6 +66,27 @@ def get_gamma_mode_label(spot, gamma_flip):
         return "SHORT GAMMA MODE → FOLLOW MOMENTUM / BUY BREAKOUTS / SELL BREAKDOWNS", "#8E24AA"
 
     return "AT FLIP → TRANSITION / REDUCE SIZE", "#FB8C00"
+
+
+def gamma_strength_color(value):
+    mapping = {
+        "STRONG_GAMMA_BACKED": "#1B5E20",
+        "GAMMA_BACKED": "#2E7D32",
+        "WEAK_GAMMA_SUPPORT": "#F57C00",
+        "WEAK_GAMMA_RESISTANCE": "#E65100",
+        "NO_GAMMA_BACKING": "#B71C1C",
+    }
+    return mapping.get(value, "#616161")
+
+
+def grade_color(value):
+    mapping = {
+        "A+": "#00C853",
+        "A": "#64DD17",
+        "B": "#FFD600",
+        "SKIP": "#D50000",
+    }
+    return mapping.get(value, "#616161")
 
 
 def ensure_dirs():
@@ -209,6 +229,71 @@ def render_gamma_section(gamma):
         st.dataframe(sup, use_container_width=True)
 
 
+def render_strength_legend():
+    st.markdown("### Gamma Strength Legend")
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.markdown(
+            "<div style='background-color:#1B5E20;padding:10px;border-radius:8px;color:white;font-weight:bold;text-align:center;'>STRONG_GAMMA_BACKED</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("Best alignment with gamma regime")
+
+    with c2:
+        st.markdown(
+            "<div style='background-color:#2E7D32;padding:10px;border-radius:8px;color:white;font-weight:bold;text-align:center;'>GAMMA_BACKED</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("Has nearby gamma support/resistance")
+
+    with c3:
+        st.markdown(
+            "<div style='background-color:#B71C1C;padding:10px;border-radius:8px;color:white;font-weight:bold;text-align:center;'>NO_GAMMA_BACKING</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("Most likely to fail")
+
+
+def render_level_badges(levels_df):
+    for _, row in levels_df.iterrows():
+        strength = row.get("gamma_strength", "UNKNOWN")
+        grade = row.get("grade", "")
+        side = row.get("side", "")
+        level = row.get("level", "")
+        reasons = row.get("reasons", "")
+
+        strength_bg = gamma_strength_color(strength)
+        grade_bg = grade_color(grade)
+
+        st.markdown(
+            f"""
+            <div style="
+                border:1px solid #444;
+                border-radius:10px;
+                padding:10px;
+                margin-bottom:10px;
+                background-color:#111;">
+                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <div style="background-color:{grade_bg}; padding:6px 10px; border-radius:8px; color:white; font-weight:bold;">
+                        {grade}
+                    </div>
+                    <div style="background-color:{strength_bg}; padding:6px 10px; border-radius:8px; color:white; font-weight:bold;">
+                        {strength}
+                    </div>
+                    <div style="padding:6px 10px; border-radius:8px; background-color:#263238; color:white; font-weight:bold;">
+                        {side} @ {level}
+                    </div>
+                </div>
+                <div style="margin-top:8px; color:#DDD;">
+                    {reasons}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+
 def render_confluence_section(confluence):
     st.subheader("Confluence Engine")
 
@@ -225,8 +310,13 @@ def render_confluence_section(confluence):
         levels = pd.DataFrame(levels)
 
     if not levels.empty:
+        render_strength_legend()
+
         st.write("### Trade Quality Levels")
         st.dataframe(levels, use_container_width=True)
+
+        st.write("### Level Strength Cards")
+        render_level_badges(levels)
 
         aplus = levels[levels["grade"] == "A+"]
         if not aplus.empty:
@@ -234,6 +324,13 @@ def render_confluence_section(confluence):
             st.dataframe(aplus, use_container_width=True)
         else:
             st.info("No A+ setups right now.")
+
+        weak_levels = levels[
+            levels["gamma_strength"].isin(["NO_GAMMA_BACKING", "WEAK_GAMMA_SUPPORT", "WEAK_GAMMA_RESISTANCE"])
+        ]
+        if not weak_levels.empty:
+            st.warning("Weak levels detected — these are more likely to fail.")
+            st.dataframe(weak_levels, use_container_width=True)
     else:
         st.warning("No confluence levels found.")
 

@@ -20,6 +20,26 @@ def classify_score(score):
     return "SKIP"
 
 
+def classify_gamma_strength(side, has_match, gamma_flip, spot):
+    if not has_match:
+        return "NO_GAMMA_BACKING"
+
+    if gamma_flip is None:
+        return "GAMMA_BACKED"
+
+    if side == "SUPPORT":
+        if spot > gamma_flip:
+            return "STRONG_GAMMA_BACKED"
+        return "WEAK_GAMMA_SUPPORT"
+
+    if side == "RESISTANCE":
+        if spot < gamma_flip:
+            return "STRONG_GAMMA_BACKED"
+        return "WEAK_GAMMA_RESISTANCE"
+
+    return "GAMMA_BACKED"
+
+
 def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
     spot = gamma["spot"]
     gamma_flip = gamma["gamma_flip"]
@@ -39,7 +59,8 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
         reasons = ["OI support"]
 
         match = nearest_level_match(level, gamma_supports, tolerance)
-        if match is not None:
+        has_match = match is not None
+        if has_match:
             score += 30
             reasons.append(f"Gamma support nearby ({match})")
 
@@ -55,9 +76,18 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
             score += 10
             reasons.append("Near OI key level")
 
+        gamma_strength = classify_gamma_strength(
+            side="SUPPORT",
+            has_match=has_match,
+            gamma_flip=gamma_flip,
+            spot=spot,
+        )
+
         scored_rows.append({
             "side": "SUPPORT",
             "level": level,
+            "gamma_match": match,
+            "gamma_strength": gamma_strength,
             "score": score,
             "grade": classify_score(score),
             "reasons": ", ".join(reasons),
@@ -68,7 +98,8 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
         reasons = ["OI resistance"]
 
         match = nearest_level_match(level, gamma_resistances, tolerance)
-        if match is not None:
+        has_match = match is not None
+        if has_match:
             score += 30
             reasons.append(f"Gamma resistance nearby ({match})")
 
@@ -84,9 +115,18 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
             score += 10
             reasons.append("Near OI key level")
 
+        gamma_strength = classify_gamma_strength(
+            side="RESISTANCE",
+            has_match=has_match,
+            gamma_flip=gamma_flip,
+            spot=spot,
+        )
+
         scored_rows.append({
             "side": "RESISTANCE",
             "level": level,
+            "gamma_match": match,
+            "gamma_strength": gamma_strength,
             "score": score,
             "grade": classify_score(score),
             "reasons": ", ".join(reasons),
@@ -102,6 +142,8 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
         "Skip if the setup fights the gamma regime",
         "Skip if there is no OI + gamma confluence nearby",
         "Skip if price is too far from the next target level",
+        "Skip weak support longs when below gamma flip",
+        "Skip weak resistance shorts when above gamma flip",
     ]
 
     return {
