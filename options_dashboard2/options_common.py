@@ -32,7 +32,7 @@ def get_current_spot_price(ticker_symbol: str) -> float:
 
 def get_today_open_spot_price(ticker_symbol: str) -> float:
     ticker = yf.Ticker(ticker_symbol)
-    hist = ticker.history(period="2d", interval="1m", prepost=False)
+    hist = ticker.history(period="7d", interval="1m", prepost=False)
 
     if hist.empty:
         raise ValueError(f"Could not get 1m history for {ticker_symbol}")
@@ -42,11 +42,16 @@ def get_today_open_spot_price(ticker_symbol: str) -> float:
 
     hist = hist.tz_convert(NY_TZ)
 
-    today_ny = datetime.now(NY_TZ).date()
-    day_data = hist[hist.index.date == today_ny]
+    # Find the most recent trading day that has data
+    trading_dates = sorted(set(hist.index.date))
+    if not trading_dates:
+        raise ValueError(f"No intraday data found for {ticker_symbol}")
+
+    latest_date = trading_dates[-1]
+    day_data = hist[hist.index.date == latest_date]
 
     if day_data.empty:
-        raise ValueError(f"No intraday data found for {ticker_symbol} for today")
+        raise ValueError(f"No intraday data found for {ticker_symbol}")
 
     open_bar = day_data[
         (day_data.index.hour == 9) & (day_data.index.minute == 30)
@@ -55,14 +60,16 @@ def get_today_open_spot_price(ticker_symbol: str) -> float:
     if not open_bar.empty:
         return float(open_bar["Open"].iloc[0])
 
+    # fallback to first available bar after 9:30
     after_open = day_data[
         ((day_data.index.hour > 9) | ((day_data.index.hour == 9) & (day_data.index.minute >= 30)))
     ]
 
-    if after_open.empty:
-        raise ValueError(f"No 9:30 or later bar found for {ticker_symbol}")
+    if not after_open.empty:
+        return float(after_open["Close"].iloc[0])
 
-    return float(after_open["Close"].iloc[0])
+    # final fallback: first close of that trading day
+    return float(day_data["Close"].iloc[0])
 
 
 def get_first_n_expirations(ticker_symbol: str, n: int) -> List[str]:
