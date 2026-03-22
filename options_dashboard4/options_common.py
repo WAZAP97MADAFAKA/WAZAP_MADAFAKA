@@ -59,6 +59,55 @@ def _download_yf_intraday(
     interval: str,
     prepost: bool,
 ) -> pd.DataFrame:
+
+    df = yf.download(
+        tickers=ticker_symbol,
+        period=period,
+        interval=interval,
+        auto_adjust=False,
+        prepost=prepost,
+        progress=False,
+        threads=False,
+    )
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+
+    df = df.copy()
+
+    # 🔥 FIX: handle index as datetime
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError(f"Unexpected yfinance index format for {ticker_symbol}")
+
+    df = df.reset_index()
+
+    # normalize column names
+    df.columns = [str(c).lower() for c in df.columns]
+
+    # find datetime column (yfinance uses "Datetime" or "Date")
+    if "datetime" in df.columns:
+        dt_col = "datetime"
+    elif "date" in df.columns:
+        dt_col = "date"
+    else:
+        raise ValueError(f"Unexpected yfinance dataframe format for {ticker_symbol}")
+
+    df["datetime"] = pd.to_datetime(df[dt_col], utc=True).dt.tz_convert(NY_TZ)
+
+    # make sure all required columns exist
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col not in df.columns:
+            df[col] = 0.0
+
+    out = df[["datetime", "open", "high", "low", "close", "volume"]].copy()
+
+    for col in ["open", "high", "low", "close", "volume"]:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+
+    out = out.dropna(subset=["datetime", "close"]).reset_index(drop=True)
+
+    return out
+
     df = yf.download(
         tickers=ticker_symbol,
         period=period,
