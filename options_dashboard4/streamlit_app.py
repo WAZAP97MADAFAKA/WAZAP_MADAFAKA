@@ -18,7 +18,7 @@ from options_config import (
 from refresh_data import refresh_oi_data
 from gamma_exposure import get_gamma_levels
 from confluence_levels import build_confluence_from_results
-from options_common import get_intraday_history_last_two_sessions, get_current_spot_price
+from options_common import get_intraday_history_last_two_sessions
 
 
 if "POLYGON_API_KEY" in st.secrets and "POLYGON_API_KEY" not in os.environ:
@@ -30,24 +30,20 @@ st.set_page_config(page_title="Options Dashboard 4", layout="wide")
 st.title("Options Dashboard 4")
 st.caption("Polygon/Massive-based OI + Gamma + VEX dashboard")
 
-st_autorefresh(interval=900000, key="dashboard_refresh")
+# 1 minute refresh
+# This only reruns the Streamlit page.
+# It does NOT recalculate OI unless you manually click the refresh button
+# or your GitHub workflow updates the cached JSON files.
+st_autorefresh(interval=60000, key="dashboard_refresh")
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def cached_intraday_history(ticker):
     return get_intraday_history_last_two_sessions(ticker)
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def cached_spot_from_history(ticker):
-    df = cached_intraday_history(ticker)
-    if df.empty:
-        raise ValueError(f"No current spot data for {ticker}")
-    return float(df["close"].iloc[-1])
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def cached_gamma(ticker, weights, max_distance, num_levels, current_spot):
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_gamma(ticker, weights, max_distance, num_levels):
     return get_gamma_levels(
         ticker_symbol=ticker,
         weights=list(weights),
@@ -209,8 +205,21 @@ def render_confluence_section(confluence):
         st.write(f"- {rule}")
 
 
+def get_chart_outcome_label(row):
+    bias = str(row.get("hold_break_bias", ""))
+
+    if bias == "LIKELY TO HOLD":
+        return "BOUNCE"
+    if bias == "CAN HOLD, BUT MESSY":
+        return "MESSY BOUNCE"
+    if bias == "LIKELY TO BREAK":
+        return "BREAKTHROUGH"
+    return "NEUTRAL"
+
+
 def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
     fig = go.Figure()
+
     fig.add_trace(
         go.Scatter(
             x=hist_df["datetime"],
@@ -222,26 +231,28 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
 
     for _, row in levels_df.iterrows():
         level = float(row["level"])
-        side = row["side"]
-        action = row["action"]
-        gex = row["level_gex"]
-        vex = row["level_vex"]
+        side = str(row.get("side", ""))
+        action = str(row.get("action", "SKIP"))
+        gex = row.get("level_gex", 0)
+        vex = row.get("level_vex", 0)
+        score = row.get("dynamic_score", 0)
+        outcome = get_chart_outcome_label(row)
 
-        if action == "LONG":
-            line_color = "#00C853"
-        elif action == "SHORT":
-            line_color = "#D50000"
-        else:
-            line_color = "#9E9E9E"
-
+        line_color = "#00C853" if side == "SUPPORT" else "#D50000"
         dash = "solid" if side == "SUPPORT" else "dot"
+
+        label_text = (
+            f"{level:.2f} | Score {score} | "
+            f"GEX {gex:,.0f} | VEX {vex:,.0f} | "
+            f"{outcome} | {action}"
+        )
 
         fig.add_hline(
             y=level,
             line_color=line_color,
             line_width=1.5,
             line_dash=dash,
-            annotation_text=f"{side} {level:.2f} | GEX {gex:,.0f} | VEX {vex:,.0f} | {action}",
+            annotation_text=label_text,
             annotation_position="right",
         )
 
@@ -315,6 +326,7 @@ if save_settings_btn:
     save_json(SETTINGS_FILE, payload)
     st.sidebar.success("Settings saved.")
 
+# OI is ONLY refreshed here when you click manually
 if manual_refresh_btn:
     try:
         refresh_oi_data()
@@ -340,14 +352,12 @@ for ticker in (tickers or DEFAULT_TICKERS):
 
     try:
         hist = cached_intraday_history(ticker)
-        current_spot = cached_spot_from_history(ticker)
 
         gamma = cached_gamma(
             ticker,
             tuple(weights),
             float(max_distance),
             int(num_levels),
-            float(current_spot),
         )
 
         oi_for_confluence = {
@@ -356,7 +366,11 @@ for ticker in (tickers or DEFAULT_TICKERS):
             "top_supports": pd.DataFrame(oi_payload.get("top_supports", [])),
             "spot": oi_payload.get("oi_fixed_spot"),
         }
-        confluence = build_confluence_from_results(ticker_symbol=ticker, oi=oi_for_confluence, gamma=gamma)
+        confluence = build_confluence_from_results(
+            ticker_symbol=ticker,
+            oi=oi_for_confluence,
+            gamma=gamma,
+        )
 
         ticker_data[ticker] = {
             "oi_payload": oi_payload,
@@ -391,7 +405,17 @@ with tab2:
             continue
 
         levels_df = data["confluence"]["levels"].copy()
-        cols = ["side", "level", "level_gex", "level_vex", "action", "grade", "gamma_strength", "hold_break_bias"]
+        cols = [
+            "side",
+            "level",
+            "level_gex",
+            "level_vex",
+            "dynamic_score",
+            "hold_break_bias",
+            "action",
+            "grade",
+            "gamma_strength",
+        ]
         cols = [c for c in cols if c in levels_df.columns]
 
         fig = build_chart_for_ticker(
@@ -401,6 +425,7 @@ with tab2:
             current_spot=float(data["gamma"]["spot"]),
         )
         st.plotly_chart(fig, use_container_width=True)
+
         st.write("### Level Summary")
         st.dataframe(levels_df[cols], use_container_width=True, hide_index=True)
         st.divider()
