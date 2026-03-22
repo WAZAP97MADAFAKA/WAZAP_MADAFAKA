@@ -263,7 +263,7 @@ st.sidebar.header("Settings")
 
 tickers = st.sidebar.multiselect(
     "Tickers",
-    options=["SPY", "QQQ"],
+    options=["SPY", "QQQ", "NVDA", "AAPL", "AMZN", "GOOGL", "META", "TSLA", "MSFT", "NFLX", "INTC", "AMD", "BABA", "V", "MA", "PYPL", "DIS", "ADBE", "CRM", "ORCL"],
     default=settings["tickers"] if settings["tickers"] else ["SPY", "QQQ"],
 )
 
