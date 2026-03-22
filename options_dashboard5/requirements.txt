@@ -1,0 +1,7 @@
+streamlit
+streamlit_autorefresh
+pandas
+numpy
+plotly
+python-dateutil
+massive
