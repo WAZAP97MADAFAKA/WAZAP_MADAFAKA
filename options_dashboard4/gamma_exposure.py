@@ -33,6 +33,21 @@ def estimate_gamma_flip(grouped_df: pd.DataFrame):
     return None
 
 
+def infer_gamma_regime_from_net_gex(spot: float, gamma_flip, total_net_gex: float):
+    if gamma_flip is not None:
+        return (
+            "ABOVE_FLIP_RANGE_BIAS"
+            if spot > gamma_flip
+            else "BELOW_FLIP_TREND_BIAS"
+        )
+
+    if total_net_gex > 0:
+        return "NO_LOCAL_FLIP_LONG_GAMMA_BIAS"
+    if total_net_gex < 0:
+        return "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS"
+    return "NO_NEARBY_FLIP_DETECTED"
+
+
 def get_gamma_levels(
     ticker_symbol: str = TICKER,
     weights=None,
@@ -42,6 +57,7 @@ def get_gamma_levels(
     if weights is None:
         weights = EXPIRATION_WEIGHTS
 
+    # Local window for levels
     spot, expirations, combined_calls, combined_puts = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
@@ -76,10 +92,18 @@ def get_gamma_levels(
         .reset_index(drop=True)
     )
 
+    # Wider window only for flip detection
+    wide_spot, wide_expirations, wide_calls, wide_puts = get_weighted_option_data_polygon(
+        ticker_symbol=ticker_symbol,
+        weights=weights,
+        fixed_spot=spot,
+        max_distance=max_distance * 4,
+    )
+
     combined_all = pd.concat(
         [
-            combined_calls[["strike", "weighted_gex"]].copy(),
-            combined_puts[["strike", "weighted_gex"]].copy(),
+            wide_calls[["strike", "weighted_gex"]].copy(),
+            wide_puts[["strike", "weighted_gex"]].copy(),
         ],
         ignore_index=True,
     )
@@ -91,6 +115,7 @@ def get_gamma_levels(
     )
 
     gamma_flip = estimate_gamma_flip(combined_all)
+    total_net_gex = float(combined_all["weighted_gex"].sum()) if not combined_all.empty else 0.0
 
     key_candidates = pd.concat(
         [
@@ -102,13 +127,7 @@ def get_gamma_levels(
     key_level = choose_nearest_key_level(key_candidates, spot, "abs_weighted_gex")
     search_min, search_max = get_local_range(spot, max_distance)
 
-    regime = (
-        "ABOVE_FLIP_RANGE_BIAS"
-        if gamma_flip is not None and spot > gamma_flip
-        else "BELOW_FLIP_TREND_BIAS"
-        if gamma_flip is not None and spot < gamma_flip
-        else "NO_NEARBY_FLIP_DETECTED"
-    )
+    regime = infer_gamma_regime_from_net_gex(spot, gamma_flip, total_net_gex)
 
     return {
         "model": "GAMMA",
@@ -120,6 +139,8 @@ def get_gamma_levels(
         "gamma_flip": gamma_flip,
         "key_level": key_level,
         "regime": regime,
+        "total_net_gex": total_net_gex,
+        "flip_source": "wide_scan" if gamma_flip is not None else "net_gex_proxy",
         "top_resistances": top_resistances[
             ["strike", "weighted_gex", "total_gex", "weighted_vex", "total_vex", "total_open_interest", "weighted_volume"]
         ],

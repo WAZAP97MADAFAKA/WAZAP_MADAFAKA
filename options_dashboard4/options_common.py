@@ -75,14 +75,14 @@ def _list_aggs_with_retry(client, ticker_symbol: str, start_date: str, end_date:
                 "minute",
                 start_date,
                 end_date,
-                limit=5000,
+                limit=2500,
             )
             return list(aggs)
         except Exception as e:
             last_error = e
             msg = str(e).lower()
             if "429" in msg or "too many" in msg or "rate" in msg:
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(2 * (attempt + 1))
                 continue
             raise
     raise last_error
@@ -128,12 +128,39 @@ def get_current_spot_price(ticker_symbol: str) -> float:
 
 
 def get_latest_session_open_spot_price(ticker_symbol: str) -> float:
-    df = get_intraday_history_last_two_sessions(ticker_symbol)
+    """
+    Gets only the latest session's 9:30 open instead of pulling a broader minute range repeatedly.
+    Falls back to the first regular-session bar if exact 9:30 is missing.
+    """
+    client = get_client()
+
+    end_dt = datetime.now(NY_TZ)
+    start_dt = end_dt - timedelta(days=4)
+
+    aggs = _list_aggs_with_retry(
+        client=client,
+        ticker_symbol=ticker_symbol,
+        start_date=start_dt.strftime("%Y-%m-%d"),
+        end_date=end_dt.strftime("%Y-%m-%d"),
+        retries=3,
+    )
+    df = _aggs_to_df(aggs)
+
     if df.empty:
         raise ValueError(f"No session open data for {ticker_symbol}")
 
+    df = df[
+        (df["datetime"].dt.hour > 9) | ((df["datetime"].dt.hour == 9) & (df["datetime"].dt.minute >= 30))
+    ]
+    df = df[df["datetime"].dt.hour < 16]
+
+    if df.empty:
+        raise ValueError(f"No regular-session intraday data found for {ticker_symbol}")
+
+    df["session_date"] = df["datetime"].dt.date
     latest_session = max(df["session_date"])
     day_df = df[df["session_date"] == latest_session].copy()
+
     open_bar = day_df[
         (day_df["datetime"].dt.hour == 9) & (day_df["datetime"].dt.minute == 30)
     ]

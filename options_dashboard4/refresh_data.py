@@ -61,6 +61,10 @@ def refresh_oi_data():
     settings = load_settings()
     now_ny = datetime.now(ZoneInfo(NY_TIMEZONE))
 
+    # avoid manual refresh on weekends
+    if now_ny.weekday() >= 5:
+        raise ValueError("OI refresh is disabled on weekends. Use the last cached OI levels.")
+
     tickers = settings["tickers"]
     weights = settings["weights"]
     max_distance = settings["max_distance"]

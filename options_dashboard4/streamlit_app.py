@@ -30,10 +30,6 @@ st.set_page_config(page_title="Options Dashboard 4", layout="wide")
 st.title("Options Dashboard 4")
 st.caption("Polygon/Massive-based OI + Gamma + VEX dashboard")
 
-# 1 minute refresh
-# This only reruns the Streamlit page.
-# It does NOT recalculate OI unless you manually click the refresh button
-# or your GitHub workflow updates the cached JSON files.
 st_autorefresh(interval=60000, key="dashboard_refresh")
 
 
@@ -85,26 +81,30 @@ def load_settings():
     }
 
 
-def get_regime_label(spot, gamma_flip):
+def get_regime_label(spot, gamma_flip, regime):
     if gamma_flip is None:
+        if regime == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
+            return "LONG GAMMA BIAS (NO LOCAL FLIP)", "#1E88E5", None
+        if regime == "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS":
+            return "SHORT GAMMA BIAS (NO LOCAL FLIP)", "#8E24AA", None
         return "NO FLIP DETECTED", "#9E9E9E", None
 
     distance_pct = abs(spot - gamma_flip) / spot * 100
-
     if distance_pct < 0.5:
         return "CHOP / TRANSITION", "#FFA726", distance_pct
     if distance_pct < 1.5:
-        if spot > gamma_flip:
-            return "MODERATE BULLISH", "#66BB6A", distance_pct
-        return "MODERATE BEARISH", "#EF5350", distance_pct
-    if spot > gamma_flip:
-        return "STRONG BULLISH", "#00C853", distance_pct
-    return "STRONG BEARISH", "#D50000", distance_pct
+        return ("MODERATE BULLISH", "#66BB6A", distance_pct) if spot > gamma_flip else ("MODERATE BEARISH", "#EF5350", distance_pct)
+    return ("STRONG BULLISH", "#00C853", distance_pct) if spot > gamma_flip else ("STRONG BEARISH", "#D50000", distance_pct)
 
 
-def get_gamma_mode_label(spot, gamma_flip):
+def get_gamma_mode_label(spot, gamma_flip, regime):
     if gamma_flip is None:
+        if regime == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
+            return "LONG GAMMA PROXY MODE → FADE MOVES / BUY DIPS / SELL RIPS", "#1E88E5"
+        if regime == "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS":
+            return "SHORT GAMMA PROXY MODE → FOLLOW MOMENTUM / BUY BREAKOUTS / SELL BREAKDOWNS", "#8E24AA"
         return "NO NEARBY FLIP → FOLLOW OVERALL BIAS", "#757575"
+
     if spot > gamma_flip:
         return "LONG GAMMA MODE → FADE MOVES / BUY DIPS / SELL RIPS", "#1E88E5"
     if spot < gamma_flip:
@@ -139,8 +139,16 @@ def render_gamma_section(gamma):
     c3.metric("Gamma Key Level", gamma.get("key_level", "N/A"))
     c4.metric("Regime", gamma.get("regime", "N/A"))
 
-    regime_label, regime_color, distance_pct = get_regime_label(gamma.get("spot"), gamma.get("gamma_flip"))
-    gamma_mode_label, gamma_mode_color = get_gamma_mode_label(gamma.get("spot"), gamma.get("gamma_flip"))
+    regime_label, regime_color, distance_pct = get_regime_label(
+        gamma.get("spot"),
+        gamma.get("gamma_flip"),
+        gamma.get("regime"),
+    )
+    gamma_mode_label, gamma_mode_color = get_gamma_mode_label(
+        gamma.get("spot"),
+        gamma.get("gamma_flip"),
+        gamma.get("regime"),
+    )
 
     st.markdown(
         f"<div style='background-color:{regime_color};padding:12px;border-radius:10px;color:white;font-weight:bold;font-size:22px;text-align:center;'>REGIME STRENGTH: {regime_label}</div>",
@@ -153,6 +161,8 @@ def render_gamma_section(gamma):
 
     if distance_pct is not None:
         st.write(f"**Distance from Flip:** {distance_pct:.2f}%")
+    st.write(f"**Net Weighted GEX:** {gamma.get('total_net_gex', 0):,.0f}")
+    st.write(f"**Flip Source:** {gamma.get('flip_source', 'unknown')}")
 
     left, right = st.columns(2)
     with left:
@@ -207,7 +217,6 @@ def render_confluence_section(confluence):
 
 def get_chart_outcome_label(row):
     bias = str(row.get("hold_break_bias", ""))
-
     if bias == "LIKELY TO HOLD":
         return "BOUNCE"
     if bias == "CAN HOLD, BUT MESSY":
@@ -219,7 +228,6 @@ def get_chart_outcome_label(row):
 
 def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
     fig = go.Figure()
-
     fig.add_trace(
         go.Scatter(
             x=hist_df["datetime"],
@@ -241,11 +249,7 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
         line_color = "#00C853" if side == "SUPPORT" else "#D50000"
         dash = "solid" if side == "SUPPORT" else "dot"
 
-        label_text = (
-            f"{level:.2f} | Score {score} | "
-            f"GEX {gex:,.0f} | VEX {vex:,.0f} | "
-            f"{outcome} | {action}"
-        )
+        label_text = f"{level:.2f} | Score {score} | GEX {gex:,.0f} | VEX {vex:,.0f} | {outcome} | {action}"
 
         fig.add_hline(
             y=level,
@@ -326,7 +330,6 @@ if save_settings_btn:
     save_json(SETTINGS_FILE, payload)
     st.sidebar.success("Settings saved.")
 
-# OI is ONLY refreshed here when you click manually
 if manual_refresh_btn:
     try:
         refresh_oi_data()
@@ -352,7 +355,6 @@ for ticker in (tickers or DEFAULT_TICKERS):
 
     try:
         hist = cached_intraday_history(ticker)
-
         gamma = cached_gamma(
             ticker,
             tuple(weights),
