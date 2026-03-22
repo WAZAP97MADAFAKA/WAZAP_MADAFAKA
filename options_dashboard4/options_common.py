@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -97,26 +97,22 @@ def _download_yf_intraday(
     for col in ["open", "high", "low", "close", "volume"]:
         out[col] = pd.to_numeric(out[col], errors="coerce")
 
-    out = out.dropna(subset=["datetime", "close"]).reset_index(drop=True)
+    out = out.dropna(subset=["datetime", "close"]).sort_values("datetime").reset_index(drop=True)
     return out
 
 
 def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
     """
-    Returns:
-    - Last rolling 24 hours if available
-    - Otherwise: most recent available data (weekends/holidays)
-
-    Includes:
+    Returns the last 24 hours worth of 1-minute bars (1440 bars max)
+    from yfinance, including:
     - premarket
     - market hours
     - aftermarket
-    - overnight (if exists)
+    - overnight
+
+    This is bar-based instead of strict wall-clock-based so it still works
+    on weekends and holidays.
     """
-
-    end_dt = datetime.now(NY_TZ)
-    cutoff = end_dt - timedelta(hours=24)
-
     df = _download_yf_intraday(
         ticker_symbol=ticker_symbol,
         period="5d",
@@ -127,20 +123,20 @@ def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
     if df.empty:
         raise ValueError(f"No intraday data found for {ticker_symbol}")
 
-    # Try strict last 24h
-    df_24h = df[df["datetime"] >= cutoff].copy()
+    # 24 hours of 1-minute bars
+    df = df.tail(1440).copy()
 
-    if not df_24h.empty:
-        return df_24h.sort_values("datetime").reset_index(drop=True)
+    if df.empty:
+        raise ValueError(f"No last-24h data found for {ticker_symbol}")
 
-    # 🔥 FALLBACK: use most recent data available
-    return df.sort_values("datetime").reset_index(drop=True)
+    df["session_date"] = df["datetime"].dt.date
+    return df.reset_index(drop=True)
 
 
 def get_current_spot_price(ticker_symbol: str) -> float:
     """
     Current displayed spot comes from the latest available 1-minute bar
-    inside the last rolling 24 hours.
+    in the last 24 hours worth of bars.
     """
     df = get_intraday_history_last_24h_extended(ticker_symbol)
     if df.empty:
@@ -152,7 +148,7 @@ def get_latest_session_open_spot_price(ticker_symbol: str) -> float:
     """
     Uses yfinance to find the most recent regular-session 9:30 AM NY open.
     This is used to anchor OI.
-    On weekends, this will use the last available trading session.
+    On weekends, this uses the last available trading session.
     """
     df = _download_yf_intraday(
         ticker_symbol=ticker_symbol,
