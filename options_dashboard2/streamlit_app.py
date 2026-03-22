@@ -23,7 +23,7 @@ st.set_page_config(page_title="Options Dashboard", layout="wide")
 st.title("Options Dashboard")
 st.caption("Static OI from 9:30 AM NY open + dynamic Gamma + confluence scoring")
 
-st_autorefresh(interval=900000, key="dashboard_refresh")
+st_autorefresh(interval=86400000, key="dashboard_refresh")
 
 
 @st.cache_data(ttl=600, show_spinner=False)
