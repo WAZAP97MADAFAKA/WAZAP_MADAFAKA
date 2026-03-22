@@ -97,14 +97,6 @@ def _list_aggs_with_retry(client, ticker_symbol: str, start_date: str, end_date:
 
 
 def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
-    """
-    Returns roughly the last 24 hours of minute data, including:
-    - premarket
-    - regular market
-    - aftermarket
-
-    No regular-session filter is applied.
-    """
     client = get_client()
 
     end_dt = datetime.now(NY_TZ)
@@ -135,8 +127,40 @@ def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
 
 def get_current_spot_price(ticker_symbol: str) -> float:
     """
-    Uses extended-hours spot from the last available minute bar in the last 24h.
+    IMPORTANT:
+    Dashboard spot should NOT use minute aggs.
+    This uses snapshot first, which is much lighter.
+    Falls back to previous close if needed.
     """
+    client = get_client()
+
+    # Try ticker snapshot
+    try:
+        snap = client.get_snapshot_ticker(ticker_symbol)
+        d = obj_to_dict(snap)
+
+        # Different client versions can shape fields differently
+        day = d.get("day", {}) or {}
+        last_trade = d.get("last_trade", {}) or {}
+        last_quote = d.get("last_quote", {}) or {}
+        min_data = d.get("min", {}) or {}
+        prev_day = d.get("prev_day", {}) or {}
+
+        candidates = [
+            last_trade.get("price"),
+            min_data.get("c"),
+            day.get("close"),
+            prev_day.get("close"),
+            last_quote.get("midpoint"),
+        ]
+
+        for value in candidates:
+            if value is not None:
+                return float(value)
+    except Exception:
+        pass
+
+    # Fallback: last value from 24h intraday history
     df = get_intraday_history_last_24h_extended(ticker_symbol)
     if df.empty:
         raise ValueError(f"No current spot data for {ticker_symbol}")
@@ -144,10 +168,6 @@ def get_current_spot_price(ticker_symbol: str) -> float:
 
 
 def get_latest_session_open_spot_price(ticker_symbol: str) -> float:
-    """
-    Finds the latest regular-session 9:30 NY open from recent minute bars.
-    This is used to anchor OI.
-    """
     client = get_client()
 
     end_dt = datetime.now(NY_TZ)
@@ -166,7 +186,6 @@ def get_latest_session_open_spot_price(ticker_symbol: str) -> float:
     if df.empty:
         raise ValueError(f"No session open data for {ticker_symbol}")
 
-    # regular session only for finding the official open
     regular_df = df[
         ((df["datetime"].dt.hour > 9) | ((df["datetime"].dt.hour == 9) & (df["datetime"].dt.minute >= 30)))
         & (df["datetime"].dt.hour < 16)
