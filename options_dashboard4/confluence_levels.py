@@ -125,6 +125,34 @@ def action_for_level(side, grade, hold_break_bias_value, gamma_flip, spot):
     return "SKIP"
 
 
+def get_proximity_score(distance_to_spot, ticker_symbol):
+    """
+    Dynamic part only.
+    This is what lets the dynamic_score rise as price gets closer.
+    """
+    if ticker_symbol == "SPY":
+        if distance_to_spot <= 0.5:
+            return 15.0
+        if distance_to_spot <= 1.0:
+            return 10.0
+        if distance_to_spot <= 2.0:
+            return 6.0
+        if distance_to_spot <= 3.0:
+            return 3.0
+        return 0.0
+
+    # QQQ
+    if distance_to_spot <= 0.25:
+        return 15.0
+    if distance_to_spot <= 0.5:
+        return 10.0
+    if distance_to_spot <= 1.0:
+        return 6.0
+    if distance_to_spot <= 1.5:
+        return 3.0
+    return 0.0
+
+
 def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
     spot = float(gamma["spot"])
     gamma_flip = gamma["gamma_flip"]
@@ -174,6 +202,7 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
 
             level_gex = get_level_metric(level, gamma_df, "weighted_gex", tolerance)
             level_vex = get_level_metric(level, gamma_df, "weighted_vex", tolerance)
+
             gamma_magnitude_score = normalize(safe_abs(level_gex), max_gamma_abs) * 30.0 if has_match else 0.0
 
             regime_score = 0.0
@@ -185,7 +214,50 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
                 else:
                     regime_score = 4.0
             else:
-                regime_score = 8.0
+                # proxy regime still gives some value
+                if regime == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
+                    regime_score = 18.0 if side == "SUPPORT" else 4.0
+                elif regime == "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS":
+                    regime_score = 18.0 if side == "RESISTANCE" else 4.0
+                else:
+                    regime_score = 8.0
+
+            sign_bonus = 0.0
+            if level_gex is not None:
+                if gamma_flip is not None:
+                    if side == "SUPPORT":
+                        if spot > gamma_flip and level_gex >= 0:
+                            sign_bonus = 10.0
+                        elif spot > gamma_flip and level_gex < 0:
+                            sign_bonus = 5.0
+                        elif spot < gamma_flip and level_gex < 0:
+                            sign_bonus = -10.0
+                    elif side == "RESISTANCE":
+                        if spot < gamma_flip and level_gex < 0:
+                            sign_bonus = 10.0
+                        elif spot < gamma_flip and level_gex >= 0:
+                            sign_bonus = 5.0
+                        elif spot > gamma_flip and level_gex < 0:
+                            sign_bonus = -10.0
+                else:
+                    # proxy regime handling
+                    if regime == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
+                        if side == "SUPPORT" and level_gex >= 0:
+                            sign_bonus = 10.0
+                        elif side == "SUPPORT" and level_gex < 0:
+                            sign_bonus = 5.0
+                        elif side == "RESISTANCE" and level_gex < 0:
+                            sign_bonus = -10.0
+                    elif regime == "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS":
+                        if side == "RESISTANCE" and level_gex < 0:
+                            sign_bonus = 10.0
+                        elif side == "RESISTANCE" and level_gex >= 0:
+                            sign_bonus = 5.0
+                        elif side == "SUPPORT" and level_gex < 0:
+                            sign_bonus = -10.0
+
+            distance_to_spot = abs(spot - level)
+            proximity_score = get_proximity_score(distance_to_spot, ticker_symbol)
 
             key_score = 0.0
             if oi["key_level"] is not None:
@@ -195,27 +267,20 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
                 elif dist_to_key <= tolerance * 2:
                     key_score = 3.0
 
-            sign_bonus = 0.0
-            if level_gex is not None and gamma_flip is not None:
-                if side == "SUPPORT":
-                    if spot > gamma_flip and level_gex >= 0:
-                        sign_bonus = 10.0
-                    elif spot > gamma_flip and level_gex < 0:
-                        sign_bonus = 5.0
-                    elif spot < gamma_flip and level_gex < 0:
-                        sign_bonus = -10.0
-                elif side == "RESISTANCE":
-                    if spot < gamma_flip and level_gex < 0:
-                        sign_bonus = 10.0
-                    elif spot < gamma_flip and level_gex >= 0:
-                        sign_bonus = 5.0
-                    elif spot > gamma_flip and level_gex < 0:
-                        sign_bonus = -10.0
-
-            dynamic_score = round(
-                oi_strength_score + gamma_magnitude_score + regime_score + key_score + sign_bonus,
+            # OLD / structure-first score
+            static_score = round(
+                oi_strength_score + gamma_magnitude_score + regime_score + sign_bonus,
                 1,
             )
+
+            # NEW / live execution score
+            dynamic_score = round(
+                static_score + proximity_score + key_score,
+                1,
+            )
+
+            static_score = min(static_score, 100.0)
+            dynamic_score = min(dynamic_score, 100.0)
 
             gamma_strength = classify_gamma_strength(
                 side=side,
@@ -227,6 +292,7 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
 
             hold_break = hold_break_bias(side, gamma_strength, gamma_flip, spot)
             grade = classify_score(dynamic_score)
+            static_grade = classify_score(static_score)
             action = action_for_level(side, grade, hold_break, gamma_flip, spot)
 
             reasons = [f"OI {oi_weighted:,.0f}"]
@@ -236,6 +302,10 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
                 reasons.append(f"GEX {level_gex:,.0f}")
             if level_vex is not None:
                 reasons.append(f"VEX {level_vex:,.0f}")
+            if proximity_score > 0:
+                reasons.append(f"Near price +{proximity_score}")
+            if key_score > 0:
+                reasons.append(f"Near key +{key_score}")
 
             scored_rows.append(
                 {
@@ -245,12 +315,14 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
                     "level_gex": round(level_gex, 2) if level_gex is not None else None,
                     "level_vex": round(level_vex, 2) if level_vex is not None else None,
                     "gamma_strength": gamma_strength,
+                    "static_score": static_score,
+                    "static_grade": static_grade,
                     "dynamic_score": dynamic_score,
                     "grade": grade,
                     "confidence": confidence_label(dynamic_score),
                     "hold_break_bias": hold_break,
                     "action": action,
-                    "distance_to_spot": round(abs(spot - level), 2),
+                    "distance_to_spot": round(distance_to_spot, 2),
                     "distance_to_key": round(abs(float(oi["key_level"]) - level), 2) if oi["key_level"] is not None else None,
                     "reasons": ", ".join(reasons),
                 }
@@ -258,7 +330,7 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
 
     scored_df = pd.DataFrame(scored_rows)
     if not scored_df.empty:
-        scored_df = scored_df.sort_values(["dynamic_score", "side"], ascending=[False, True]).reset_index(drop=True)
+        scored_df = scored_df.sort_values(["dynamic_score", "static_score", "side"], ascending=[False, False, True]).reset_index(drop=True)
 
     skip_rules = [
         "Skip if price slices through the level with no rejection",

@@ -30,7 +30,6 @@ st.set_page_config(page_title="Options Dashboard 4", layout="wide")
 st.title("Options Dashboard 4")
 st.caption("Polygon/Massive-based OI + Gamma + VEX dashboard")
 
-# refresh every minute
 st_autorefresh(interval=60000, key="dashboard_refresh")
 
 
@@ -246,6 +245,8 @@ def render_confluence_section(confluence):
         "level_gex",
         "level_vex",
         "gamma_strength",
+        "static_score",
+        "static_grade",
         "dynamic_score",
         "grade",
         "confidence",
@@ -298,14 +299,15 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
         action = str(row.get("action", "SKIP"))
         gex = row.get("level_gex", 0)
         vex = row.get("level_vex", 0)
-        score = row.get("dynamic_score", 0)
+        dynamic_score = row.get("dynamic_score", 0)
+        static_score = row.get("static_score", 0)
         outcome = get_chart_outcome_label(row)
 
         line_color = "#00C853" if side == "SUPPORT" else "#D50000"
         dash = "solid" if side == "SUPPORT" else "dot"
 
         label_text = (
-            f"{level:.2f} | Score {score} | "
+            f"{level:.2f} | Static {static_score} | Dynamic {dynamic_score} | "
             f"GEX {gex:,.0f} | VEX {vex:,.0f} | "
             f"{outcome} | {action}"
         )
@@ -404,7 +406,6 @@ tab1, tab2 = st.tabs(["Dashboard", "Charts"])
 
 ticker_data = {}
 
-# Dashboard now uses gamma with extended-hours spot via options_common.get_current_spot_price()
 for ticker in (tickers or DEFAULT_TICKERS):
     oi_path = os.path.join(DATA_CACHE_DIR, f"oi_{ticker}.json")
     oi_payload = load_json(oi_path, {})
@@ -457,7 +458,7 @@ with tab1:
         st.divider()
 
 with tab2:
-    st.write("Charts show the last 24 hours including premarket, market hours, and aftermarket.")
+    st.write("Charts show the last 24 hours of 1-minute bars including premarket, market hours, aftermarket, and overnight.")
 
     for ticker in (tickers or DEFAULT_TICKERS):
         st.header(f"{ticker} Chart")
@@ -476,6 +477,8 @@ with tab2:
                 "level",
                 "level_gex",
                 "level_vex",
+                "static_score",
+                "static_grade",
                 "dynamic_score",
                 "hold_break_bias",
                 "action",
