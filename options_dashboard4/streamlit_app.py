@@ -1,506 +1,504 @@
+import json
+import os
+
 import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from streamlit_autorefresh import st_autorefresh
+
+from options_config import (
+    DEFAULT_TICKERS,
+    DEFAULT_EXPIRATION_WEIGHTS,
+    DEFAULT_MAX_DISTANCE,
+    DEFAULT_NUM_LEVELS,
+    DATA_CACHE_DIR,
+    SETTINGS_FILE,
+    REFRESH_STATUS_FILE,
+)
+from refresh_data import refresh_oi_data
+from gamma_exposure import get_gamma_levels
+from confluence_levels import build_confluence_from_results
+from options_common import get_intraday_history_last_24h_extended
 
 
-def nearest_level_match(level, levels, tolerance):
-    if not levels:
-        return None
-    matches = [x for x in levels if abs(x - level) <= tolerance]
-    if not matches:
-        return None
-    return min(matches, key=lambda x: abs(x - level))
+if "POLYGON_API_KEY" in st.secrets and "POLYGON_API_KEY" not in os.environ:
+    os.environ["POLYGON_API_KEY"] = st.secrets["POLYGON_API_KEY"]
+if "MASSIVE_API_KEY" in st.secrets and "MASSIVE_API_KEY" not in os.environ:
+    os.environ["MASSIVE_API_KEY"] = st.secrets["MASSIVE_API_KEY"]
+
+st.set_page_config(page_title="Options Dashboard 4", layout="wide")
+st.title("Options Dashboard 4")
+st.caption("Polygon/Massive-based OI + Gamma + VEX dashboard")
+
+st_autorefresh(interval=60000, key="dashboard_refresh")
 
 
-def safe_abs(x):
-    return abs(float(x)) if x is not None else 0.0
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_gamma(ticker, weights, max_distance, num_levels):
+    return get_gamma_levels(
+        ticker_symbol=ticker,
+        weights=list(weights),
+        max_distance=float(max_distance),
+        num_levels=int(num_levels),
+    )
 
 
-def normalize(value, max_value):
-    if max_value is None or max_value <= 0:
-        return 0.0
-    return min(max(float(value) / float(max_value), 0.0), 1.0)
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_intraday_history(ticker):
+    return get_intraday_history_last_24h_extended(ticker)
 
 
-def classify_score(score):
-    if score >= 80:
-        return "A+"
-    if score >= 67:
-        return "A"
-    if score >= 52:
-        return "B"
-    return "SKIP"
+def load_json(path, fallback=None):
+    if fallback is None:
+        fallback = {}
+    if not os.path.exists(path):
+        return fallback
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return fallback
 
 
-def confidence_label(score):
-    if score >= 80:
-        return "HIGH"
-    if score >= 67:
-        return "MEDIUM"
-    if score >= 52:
-        return "LOW"
-    return "AVOID"
+def save_json(path, payload):
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
 
 
-def classify_vex_strength(vex_value, max_vex):
-    if vex_value is None or max_vex <= 0:
-        return "LOW"
+def load_settings():
+    default_settings = {
+        "tickers": DEFAULT_TICKERS,
+        "weights": DEFAULT_EXPIRATION_WEIGHTS,
+        "max_distance": DEFAULT_MAX_DISTANCE,
+        "num_levels": DEFAULT_NUM_LEVELS,
+    }
+    saved = load_json(SETTINGS_FILE, default_settings)
+    return {
+        "tickers": saved.get("tickers", DEFAULT_TICKERS),
+        "weights": saved.get("weights", DEFAULT_EXPIRATION_WEIGHTS),
+        "max_distance": saved.get("max_distance", DEFAULT_MAX_DISTANCE),
+        "num_levels": saved.get("num_levels", DEFAULT_NUM_LEVELS),
+    }
 
-    ratio = abs(vex_value) / max_vex
 
-    if ratio >= 0.60:
-        return "HIGH"
-    if ratio >= 0.30:
-        return "MEDIUM"
-    return "LOW"
-
-
-def classify_gamma_strength(side, has_match, gamma_flip, spot, level_gex, regime):
-    if not has_match:
-        return "NO_GAMMA_BACKING"
-
+def get_regime_label(spot, gamma_flip, regime):
     if gamma_flip is None:
         if regime == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
-            if side == "SUPPORT":
-                return "STRONG_GAMMA_BACKED" if level_gex >= 0 else "STRONG_BUT_VOLATILE"
-            return "WEAK_GAMMA_RESISTANCE" if level_gex < 0 else "GAMMA_BACKED"
-
+            return "LONG GAMMA BIAS (NO LOCAL FLIP)", "#1E88E5", None
         if regime == "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS":
-            if side == "RESISTANCE":
-                return "STRONG_GAMMA_BACKED" if level_gex < 0 else "STRONG_BUT_VOLATILE"
-            return "WEAK_GAMMA_SUPPORT"
+            return "SHORT GAMMA BIAS (NO LOCAL FLIP)", "#8E24AA", None
+        return "NO FLIP DETECTED", "#9E9E9E", None
 
-        if level_gex < 0:
-            return "STRONG_BUT_VOLATILE"
-        return "GAMMA_BACKED"
+    distance_pct = abs(spot - gamma_flip) / spot * 100
+
+    if distance_pct < 0.5:
+        return "CHOP / TRANSITION", "#FFA726", distance_pct
+    if distance_pct < 1.5:
+        if spot > gamma_flip:
+            return "MODERATE BULLISH", "#66BB6A", distance_pct
+        return "MODERATE BEARISH", "#EF5350", distance_pct
+    if spot > gamma_flip:
+        return "STRONG BULLISH", "#00C853", distance_pct
+    return "STRONG BEARISH", "#D50000", distance_pct
+
+
+def get_gamma_mode_label(spot, gamma_flip, regime):
+    if gamma_flip is None:
+        if regime == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
+            return "LONG GAMMA PROXY MODE → FADE MOVES / BUY DIPS / SELL RIPS", "#1E88E5"
+        if regime == "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS":
+            return "SHORT GAMMA PROXY MODE → FOLLOW MOMENTUM / BUY BREAKOUTS / SELL BREAKDOWNS", "#8E24AA"
+        return "NO NEARBY FLIP → FOLLOW OVERALL BIAS", "#757575"
 
     if spot > gamma_flip:
-        if side == "SUPPORT":
-            return "STRONG_GAMMA_BACKED" if level_gex >= 0 else "STRONG_BUT_VOLATILE"
-        return "STRONG_GAMMA_BACKED" if level_gex >= 0 else "WEAK_GAMMA_RESISTANCE"
-
+        return "LONG GAMMA MODE → FADE MOVES / BUY DIPS / SELL RIPS", "#1E88E5"
     if spot < gamma_flip:
-        if side == "SUPPORT":
-            return "WEAK_GAMMA_SUPPORT"
-        return "STRONG_GAMMA_BACKED" if level_gex < 0 else "STRONG_BUT_VOLATILE"
-
-    return "GAMMA_BACKED"
-
-
-def hold_break_bias(side, gamma_strength, gamma_flip, spot, regime):
-    if gamma_strength == "STRONG_GAMMA_BACKED":
-        return "LIKELY TO HOLD"
-    if gamma_strength in ["NO_GAMMA_BACKING", "WEAK_GAMMA_SUPPORT", "WEAK_GAMMA_RESISTANCE"]:
-        return "LIKELY TO BREAK"
-    if gamma_strength == "STRONG_BUT_VOLATILE":
-        return "CAN HOLD, BUT MESSY"
-
-    if gamma_flip is None:
-        if regime == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
-            return "LIKELY TO HOLD" if side == "SUPPORT" else "LIKELY TO BREAK"
-        if regime == "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS":
-            return "LIKELY TO HOLD" if side == "RESISTANCE" else "LIKELY TO BREAK"
-        return "NEUTRAL"
-
-    if side == "SUPPORT":
-        return "LIKELY TO HOLD" if spot > gamma_flip else "LIKELY TO BREAK"
-    return "LIKELY TO HOLD" if spot < gamma_flip else "LIKELY TO BREAK"
-
-
-def get_level_metric(level, df, metric, tolerance):
-    if df is None or df.empty or metric not in df.columns:
-        return None
-
-    exact = df[df["strike"] == level]
-    if not exact.empty:
-        return float(exact.iloc[0][metric])
-
-    nearby = df[(df["strike"] - level).abs() <= tolerance]
-    if not nearby.empty:
-        nearest = nearby.iloc[(nearby["strike"] - level).abs().argsort()].iloc[0]
-        return float(nearest[metric])
-
-    return None
-
-
-def get_proximity_score(distance_to_spot, ticker_symbol):
-    if ticker_symbol == "SPY":
-        if distance_to_spot <= 0.5:
-            return 15.0
-        if distance_to_spot <= 1.0:
-            return 10.0
-        if distance_to_spot <= 2.0:
-            return 6.0
-        if distance_to_spot <= 3.0:
-            return 3.0
-        return 0.0
-
-    if distance_to_spot <= 0.25:
-        return 15.0
-    if distance_to_spot <= 0.5:
-        return 10.0
-    if distance_to_spot <= 1.0:
-        return 6.0
-    if distance_to_spot <= 1.5:
-        return 3.0
-    return 0.0
-
-
-def classify_market_behavior(level_gex, vex_strength):
-    if level_gex >= 0 and vex_strength == "LOW":
-        return "CLEAN"
-    if level_gex >= 0 and vex_strength == "MEDIUM":
-        return "CONTROLLED"
-    if level_gex >= 0 and vex_strength == "HIGH":
-        return "FAST"
-    if level_gex < 0 and vex_strength == "LOW":
-        return "CHOP"
-    if level_gex < 0 and vex_strength == "MEDIUM":
-        return "UNSTABLE"
-    if level_gex < 0 and vex_strength == "HIGH":
-        return "EXPLOSIVE"
-    return "MIXED"
-
-
-def classify_best_trade_type(market_behavior, hold_break_bias_value):
-    if market_behavior == "CLEAN":
-        return "BOUNCE"
-    if market_behavior == "CONTROLLED":
-        return "BOUNCE"
-    if market_behavior == "FAST":
-        return "SCALP"
-    if market_behavior == "EXPLOSIVE":
-        return "BREAKOUT"
-    if market_behavior == "UNSTABLE":
-        return "BREAKOUT" if hold_break_bias_value == "LIKELY TO BREAK" else "SKIP"
-    return "SKIP"
-
-
-def classify_direction(side, best_trade_type, hold_break_bias_value):
-    if best_trade_type in ["BOUNCE", "SCALP"]:
-        if side == "SUPPORT":
-            return "LONG"
-        if side == "RESISTANCE":
-            return "SHORT"
-    if best_trade_type == "BREAKOUT":
-        if side == "SUPPORT" and hold_break_bias_value == "LIKELY TO BREAK":
-            return "SHORT"
-        if side == "RESISTANCE" and hold_break_bias_value == "LIKELY TO BREAK":
-            return "LONG"
-    return "SKIP"
-
-
-def get_entry_stop_target(level, side, best_trade_type, direction, ticker_symbol):
-    tick = 0.10 if ticker_symbol == "SPY" else 0.20
-    stop_pad = 0.40 if ticker_symbol == "SPY" else 0.80
-
-    if direction == "SKIP":
-        return None, None, None
-
-    if best_trade_type in ["BOUNCE", "SCALP"]:
-        if direction == "LONG":
-            entry = level + tick
-            stop = level - stop_pad
-            risk = entry - stop
-            target = entry + (1.2 * risk if best_trade_type == "SCALP" else 2.0 * risk)
-        else:
-            entry = level - tick
-            stop = level + stop_pad
-            risk = stop - entry
-            target = entry - (1.2 * risk if best_trade_type == "SCALP" else 2.0 * risk)
-    else:
-        # BREAKOUT
-        if direction == "LONG":
-            entry = level + tick
-            stop = level - (stop_pad * 0.75)
-            risk = entry - stop
-            target = entry + 2.5 * risk
-        else:
-            entry = level - tick
-            stop = level + (stop_pad * 0.75)
-            risk = stop - entry
-            target = entry - 2.5 * risk
-
-    return round(entry, 2), round(stop, 2), round(target, 2)
-
-
-def get_probabilities(market_behavior, hold_break_bias_value, gamma_strength, dynamic_score):
-    bounce = 50
-    breakout = 50
-
-    if market_behavior == "CLEAN":
-        bounce, breakout = 78, 22
-    elif market_behavior == "CONTROLLED":
-        bounce, breakout = 70, 30
-    elif market_behavior == "FAST":
-        bounce, breakout = 62, 38
-    elif market_behavior == "CHOP":
-        bounce, breakout = 40, 35
-    elif market_behavior == "UNSTABLE":
-        bounce, breakout = 35, 60
-    elif market_behavior == "EXPLOSIVE":
-        bounce, breakout = 20, 80
-
-    if hold_break_bias_value == "LIKELY TO HOLD":
-        bounce += 8
-        breakout -= 8
-    elif hold_break_bias_value == "LIKELY TO BREAK":
-        breakout += 8
-        bounce -= 8
-
-    if gamma_strength == "STRONG_GAMMA_BACKED":
-        bounce += 5
-    elif gamma_strength in ["WEAK_GAMMA_SUPPORT", "WEAK_GAMMA_RESISTANCE", "NO_GAMMA_BACKING"]:
-        breakout += 5
-
-    if dynamic_score >= 80:
-        bounce += 3 if bounce >= breakout else 0
-        breakout += 3 if breakout > bounce else 0
-
-    bounce = max(0, min(100, bounce))
-    breakout = max(0, min(100, breakout))
-    return bounce, breakout
-
-
-def classify_trade_now_signal(dynamic_score, static_score, distance_to_spot, best_trade_type, direction, ticker_symbol):
-    close_threshold = 1.0 if ticker_symbol == "SPY" else 0.5
-    delta = dynamic_score - static_score
-
-    if direction == "SKIP" or best_trade_type == "SKIP":
-        return "SKIP"
-
-    if dynamic_score >= 80 and delta >= 6 and distance_to_spot <= close_threshold:
-        return "TRADE NOW"
-
-    if dynamic_score >= 67 and distance_to_spot <= close_threshold * 2:
-        return "WATCH"
-
-    return "PLAN"
-
-
-def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
-    spot = float(gamma["spot"])
-    gamma_flip = gamma["gamma_flip"]
-    regime = gamma["regime"]
-
-    tolerance = 1.0 if ticker_symbol == "SPY" else 0.5
-
-    oi_supports_df = oi["top_supports"] if isinstance(oi["top_supports"], pd.DataFrame) else pd.DataFrame(oi["top_supports"])
-    oi_resistances_df = oi["top_resistances"] if isinstance(oi["top_resistances"], pd.DataFrame) else pd.DataFrame(oi["top_resistances"])
-    gamma_supports_df = gamma["top_supports"] if isinstance(gamma["top_supports"], pd.DataFrame) else pd.DataFrame(gamma["top_supports"])
-    gamma_resistances_df = gamma["top_resistances"] if isinstance(gamma["top_resistances"], pd.DataFrame) else pd.DataFrame(gamma["top_resistances"])
-
-    oi_supports = oi_supports_df["strike"].tolist() if not oi_supports_df.empty else []
-    oi_resistances = oi_resistances_df["strike"].tolist() if not oi_resistances_df.empty else []
-    gamma_supports = gamma_supports_df["strike"].tolist() if not gamma_supports_df.empty else []
-    gamma_resistances = gamma_resistances_df["strike"].tolist() if not gamma_resistances_df.empty else []
-
-    all_oi_woi = []
-    if not oi_supports_df.empty and "weighted_open_interest" in oi_supports_df.columns:
-        all_oi_woi.extend(oi_supports_df["weighted_open_interest"].astype(float).tolist())
-    if not oi_resistances_df.empty and "weighted_open_interest" in oi_resistances_df.columns:
-        all_oi_woi.extend(oi_resistances_df["weighted_open_interest"].astype(float).tolist())
-
-    all_gamma_abs = []
-    if not gamma_supports_df.empty and "weighted_gex" in gamma_supports_df.columns:
-        all_gamma_abs.extend(gamma_supports_df["weighted_gex"].abs().astype(float).tolist())
-    if not gamma_resistances_df.empty and "weighted_gex" in gamma_resistances_df.columns:
-        all_gamma_abs.extend(gamma_resistances_df["weighted_gex"].abs().astype(float).tolist())
-
-    all_vex_abs = []
-    if not gamma_supports_df.empty and "weighted_vex" in gamma_supports_df.columns:
-        all_vex_abs.extend(gamma_supports_df["weighted_vex"].abs().astype(float).tolist())
-    if not gamma_resistances_df.empty and "weighted_vex" in gamma_resistances_df.columns:
-        all_vex_abs.extend(gamma_resistances_df["weighted_vex"].abs().astype(float).tolist())
-
-    max_oi_woi = max(all_oi_woi) if all_oi_woi else 0.0
-    max_gamma_abs = max(all_gamma_abs) if all_gamma_abs else 0.0
-    max_vex_abs = max(all_vex_abs) if all_vex_abs else 0.0
-
-    scored_rows = []
-
-    for side, oi_df, level_list, gamma_list, gamma_df in [
-        ("SUPPORT", oi_supports_df, oi_supports, gamma_supports, gamma_supports_df),
-        ("RESISTANCE", oi_resistances_df, oi_resistances, gamma_resistances, gamma_resistances_df),
-    ]:
-        for level in level_list:
-            row = oi_df[oi_df["strike"] == level].iloc[0]
-
-            oi_weighted = float(row.get("weighted_open_interest", 0.0))
-            oi_strength_score = normalize(oi_weighted, max_oi_woi) * 35.0
-
-            match = nearest_level_match(level, gamma_list, tolerance)
-            has_match = match is not None
-
-            level_gex = get_level_metric(level, gamma_df, "weighted_gex", tolerance)
-            level_vex = get_level_metric(level, gamma_df, "weighted_vex", tolerance)
-
-            level_gex = 0.0 if level_gex is None else float(level_gex)
-            level_vex = 0.0 if level_vex is None else float(level_vex)
-
-            gamma_magnitude_score = normalize(safe_abs(level_gex), max_gamma_abs) * 30.0 if has_match else 0.0
-
-            regime_score = 0.0
-            if gamma_flip is not None:
-                if side == "SUPPORT" and spot > gamma_flip:
-                    regime_score = 18.0
-                elif side == "RESISTANCE" and spot < gamma_flip:
-                    regime_score = 18.0
-                else:
-                    regime_score = 4.0
-            else:
-                if regime == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
-                    regime_score = 18.0 if side == "SUPPORT" else 4.0
-                elif regime == "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS":
-                    regime_score = 18.0 if side == "RESISTANCE" else 4.0
-                else:
-                    regime_score = 8.0
-
-            sign_bonus = 0.0
-            if gamma_flip is not None:
-                if side == "SUPPORT":
-                    if spot > gamma_flip and level_gex >= 0:
-                        sign_bonus = 10.0
-                    elif spot > gamma_flip and level_gex < 0:
-                        sign_bonus = 5.0
-                    elif spot < gamma_flip and level_gex < 0:
-                        sign_bonus = -10.0
-                elif side == "RESISTANCE":
-                    if spot < gamma_flip and level_gex < 0:
-                        sign_bonus = 10.0
-                    elif spot < gamma_flip and level_gex >= 0:
-                        sign_bonus = 5.0
-                    elif spot > gamma_flip and level_gex < 0:
-                        sign_bonus = -10.0
-            else:
-                if regime == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
-                    if side == "SUPPORT" and level_gex >= 0:
-                        sign_bonus = 10.0
-                    elif side == "SUPPORT" and level_gex < 0:
-                        sign_bonus = 5.0
-                    elif side == "RESISTANCE" and level_gex < 0:
-                        sign_bonus = -10.0
-                elif regime == "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS":
-                    if side == "RESISTANCE" and level_gex < 0:
-                        sign_bonus = 10.0
-                    elif side == "RESISTANCE" and level_gex >= 0:
-                        sign_bonus = 5.0
-                    elif side == "SUPPORT" and level_gex < 0:
-                        sign_bonus = -10.0
-
-            distance_to_spot = abs(spot - level)
-            proximity_score = get_proximity_score(distance_to_spot, ticker_symbol)
-
-            key_score = 0.0
-            if oi["key_level"] is not None:
-                dist_to_key = abs(float(oi["key_level"]) - level)
-                if dist_to_key <= tolerance:
-                    key_score = 7.0
-                elif dist_to_key <= tolerance * 2:
-                    key_score = 3.0
-
-            static_score = round(
-                oi_strength_score + gamma_magnitude_score + regime_score + sign_bonus,
-                1,
-            )
-            dynamic_score = round(static_score + proximity_score + key_score, 1)
-
-            static_score = min(static_score, 100.0)
-            dynamic_score = min(dynamic_score, 100.0)
-
-            vex_strength = classify_vex_strength(level_vex, max_vex_abs)
-            gamma_strength = classify_gamma_strength(
-                side=side,
-                has_match=has_match,
-                gamma_flip=gamma_flip,
-                spot=spot,
-                level_gex=level_gex,
-                regime=regime,
-            )
-            hold_break = hold_break_bias(side, gamma_strength, gamma_flip, spot, regime)
-            market_behavior = classify_market_behavior(level_gex, vex_strength)
-            best_trade_type = classify_best_trade_type(market_behavior, hold_break)
-            direction = classify_direction(side, best_trade_type, hold_break)
-            entry, stop, target = get_entry_stop_target(level, side, best_trade_type, direction, ticker_symbol)
-            bounce_prob, breakout_prob = get_probabilities(
-                market_behavior,
-                hold_break,
-                gamma_strength,
-                dynamic_score,
-            )
-            trade_now_signal = classify_trade_now_signal(
-                dynamic_score=dynamic_score,
-                static_score=static_score,
-                distance_to_spot=distance_to_spot,
-                best_trade_type=best_trade_type,
-                direction=direction,
-                ticker_symbol=ticker_symbol,
-            )
-
-            reasons = [f"OI {oi_weighted:,.0f}"]
-            if has_match:
-                reasons.append(f"Gamma match {match}")
-            if level_gex is not None:
-                reasons.append(f"GEX {level_gex:,.0f}")
-            if level_vex is not None:
-                reasons.append(f"VEX {level_vex:,.0f}")
-            if proximity_score > 0:
-                reasons.append(f"Near price +{proximity_score}")
-            if key_score > 0:
-                reasons.append(f"Near key +{key_score}")
-
-            scored_rows.append(
-                {
-                    "side": side,
-                    "level": level,
-                    "gamma_match": match,
-                    "level_gex": round(level_gex, 2),
-                    "level_vex": round(level_vex, 2),
-                    "vex_strength": vex_strength,
-                    "gamma_strength": gamma_strength,
-                    "market_behavior": market_behavior,
-                    "best_trade_type": best_trade_type,
-                    "direction": direction,
-                    "static_score": static_score,
-                    "static_grade": classify_score(static_score),
-                    "dynamic_score": dynamic_score,
-                    "grade": classify_score(dynamic_score),
-                    "confidence": confidence_label(dynamic_score),
-                    "hold_break_bias": hold_break,
-                    "trade_now_signal": trade_now_signal,
-                    "bounce_probability": bounce_prob,
-                    "breakout_probability": breakout_prob,
-                    "entry": entry,
-                    "stop": stop,
-                    "target": target,
-                    "distance_to_spot": round(distance_to_spot, 2),
-                    "distance_to_key": round(abs(float(oi["key_level"]) - level), 2) if oi["key_level"] is not None else None,
-                    "reasons": ", ".join(reasons),
-                }
-            )
-
-    scored_df = pd.DataFrame(scored_rows)
-    if not scored_df.empty:
-        scored_df = scored_df.sort_values(
-            ["dynamic_score", "static_score", "bounce_probability", "breakout_probability"],
-            ascending=[False, False, False, False],
-        ).reset_index(drop=True)
-
-    skip_rules = [
-        "Skip if price slices through the level with no rejection.",
-        "Skip if price reaches the level during major news.",
-        "Skip if the setup fights the gamma regime.",
-        "Skip if there is no OI + gamma confluence nearby.",
-        "Be cautious with STRONG_BUT_VOLATILE levels because they can react sharply but not cleanly.",
-        "Skip CHOP behavior unless a very clear tape confirmation appears.",
+        return "SHORT GAMMA MODE → FOLLOW MOMENTUM / BUY BREAKOUTS / SELL BREAKDOWNS", "#8E24AA"
+    return "AT FLIP → TRANSITION / REDUCE SIZE", "#FB8C00"
+
+
+def render_oi_section(payload):
+    st.subheader("Static OI Map")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("OI Fixed Spot", round(float(payload.get("oi_fixed_spot", 0.0)), 2))
+    c2.metric("OI Key Level", payload.get("key_level", "N/A"))
+    c3.metric("OI Last Refresh (NY)", payload.get("refreshed_at_ny", "N/A"))
+
+    if payload.get("refresh_mode"):
+        st.write(f"**OI Refresh Mode:** {payload.get('refresh_mode')}")
+
+    res = pd.DataFrame(payload.get("top_resistances", []))
+    sup = pd.DataFrame(payload.get("top_supports", []))
+
+    left, right = st.columns(2)
+    with left:
+        st.write("### OI Resistances")
+        st.dataframe(res, use_container_width=True, hide_index=True)
+    with right:
+        st.write("### OI Supports")
+        st.dataframe(sup, use_container_width=True, hide_index=True)
+
+
+def render_gamma_section(gamma):
+    st.subheader("Dynamic Gamma + VEX Map")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Current Spot", gamma.get("spot", "N/A"))
+    c2.metric("Gamma Flip", gamma.get("gamma_flip", "None"))
+    c3.metric("Gamma Key Level", gamma.get("key_level", "N/A"))
+    c4.metric("Regime", gamma.get("regime", "N/A"))
+
+    regime_label, regime_color, distance_pct = get_regime_label(
+        gamma.get("spot"),
+        gamma.get("gamma_flip"),
+        gamma.get("regime"),
+    )
+    gamma_mode_label, gamma_mode_color = get_gamma_mode_label(
+        gamma.get("spot"),
+        gamma.get("gamma_flip"),
+        gamma.get("regime"),
+    )
+
+    st.markdown(
+        f"""
+        <div style="
+            background-color:{regime_color};
+            padding:12px;
+            border-radius:10px;
+            color:white;
+            font-weight:bold;
+            font-size:22px;
+            text-align:center;">
+            REGIME STRENGTH: {regime_label}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        f"""
+        <div style="
+            background-color:{gamma_mode_color};
+            padding:12px;
+            border-radius:10px;
+            color:white;
+            font-weight:bold;
+            font-size:18px;
+            text-align:center;
+            margin-top:8px;">
+            GAMMA MODE: {gamma_mode_label}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if distance_pct is not None:
+        st.write(f"**Distance from Flip:** {distance_pct:.2f}%")
+
+    st.write(f"**Net Weighted GEX:** {gamma.get('total_net_gex', 0):,.0f}")
+    st.write(f"**Flip Source:** {gamma.get('flip_source', 'unknown')}")
+
+    left, right = st.columns(2)
+    with left:
+        st.write("### Gamma Resistances")
+        st.dataframe(
+            pd.DataFrame(gamma.get("top_resistances", [])),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.write("### VEX Resistances")
+        st.dataframe(
+            pd.DataFrame(gamma.get("top_vex_resistances", [])),
+            use_container_width=True,
+            hide_index=True,
+        )
+    with right:
+        st.write("### Gamma Supports")
+        st.dataframe(
+            pd.DataFrame(gamma.get("top_supports", [])),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.write("### VEX Supports")
+        st.dataframe(
+            pd.DataFrame(gamma.get("top_vex_supports", [])),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+def render_confluence_section(confluence):
+    st.subheader("Confluence Engine")
+
+    levels = confluence.get("levels", pd.DataFrame())
+    if isinstance(levels, list):
+        levels = pd.DataFrame(levels)
+
+    if levels.empty:
+        st.warning("No confluence levels found.")
+        return
+
+    cols = [
+        "side",
+        "level",
+        "level_gex",
+        "level_vex",
+        "gamma_strength",
+        "static_score",
+        "static_grade",
+        "dynamic_score",
+        "grade",
+        "confidence",
+        "hold_break_bias",
+        "action",
+        "distance_to_spot",
+        "distance_to_key",
     ]
+    cols = [c for c in cols if c in levels.columns]
 
-    return {
-        "ticker": ticker_symbol,
-        "spot": spot,
-        "oi_fixed_spot": oi.get("spot"),
-        "gamma_flip": gamma_flip,
-        "regime": regime,
-        "oi_key_level": oi["key_level"],
-        "gamma_key_level": gamma["key_level"],
-        "levels": scored_df,
-        "skip_rules": skip_rules,
+    st.dataframe(levels[cols], use_container_width=True, hide_index=True)
+
+    aplus = levels[levels["grade"] == "A+"]
+    if not aplus.empty:
+        st.success("A+ setups detected")
+        st.dataframe(aplus[cols], use_container_width=True, hide_index=True)
+
+    st.write("### When to Skip a Trade")
+    for rule in confluence.get("skip_rules", []):
+        st.write(f"- {rule}")
+
+
+def get_chart_outcome_label(row):
+    bias = str(row.get("hold_break_bias", ""))
+
+    if bias == "LIKELY TO HOLD":
+        return "BOUNCE"
+    if bias == "CAN HOLD, BUT MESSY":
+        return "MESSY BOUNCE"
+    if bias == "LIKELY TO BREAK":
+        return "BREAKTHROUGH"
+    return "NEUTRAL"
+
+
+def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=hist_df["datetime"],
+            y=hist_df["close"],
+            mode="lines",
+            name=f"{ticker} Price",
+        )
+    )
+
+    for _, row in levels_df.iterrows():
+        level = float(row["level"])
+        side = str(row.get("side", ""))
+        action = str(row.get("action", "SKIP"))
+        gex = row.get("level_gex", 0)
+        vex = row.get("level_vex", 0)
+        dynamic_score = row.get("dynamic_score", 0)
+        static_score = row.get("static_score", 0)
+        outcome = get_chart_outcome_label(row)
+
+        line_color = "#00C853" if side == "SUPPORT" else "#D50000"
+        dash = "solid" if side == "SUPPORT" else "dot"
+
+        label_text = (
+            f"{level:.2f} | Static {static_score} | Dynamic {dynamic_score} | "
+            f"GEX {gex:,.0f} | VEX {vex:,.0f} | "
+            f"{outcome} | {action}"
+        )
+
+        fig.add_hline(
+            y=level,
+            line_color=line_color,
+            line_width=1.5,
+            line_dash=dash,
+            annotation_text=label_text,
+            annotation_position="right",
+        )
+
+    fig.add_hline(
+        y=float(current_spot),
+        line_color="#1E88E5",
+        line_width=1,
+        line_dash="dash",
+        annotation_text=f"Spot {current_spot:.2f}",
+        annotation_position="left",
+    )
+
+    fig.update_layout(
+        title=f"{ticker} - Last 24h (Premarket + Market + Aftermarket)",
+        xaxis_title="Time",
+        yaxis_title="Price",
+        height=600,
+        legend_title="Series",
+        margin=dict(l=30, r=30, t=50, b=30),
+    )
+    return fig
+
+
+settings = load_settings()
+
+st.sidebar.header("Settings")
+
+tickers = st.sidebar.multiselect(
+    "Tickers",
+    options=["SPY", "QQQ"],
+    default=settings["tickers"] if settings["tickers"] else ["SPY", "QQQ"],
+)
+
+weights_text = st.sidebar.text_input(
+    "Expiration Weights",
+    value=",".join(str(x) for x in settings["weights"]),
+)
+
+max_distance = st.sidebar.number_input(
+    "Max Distance",
+    min_value=1.0,
+    max_value=100.0,
+    value=float(settings["max_distance"]),
+    step=1.0,
+)
+
+num_levels = st.sidebar.number_input(
+    "Num Levels",
+    min_value=1,
+    max_value=30,
+    value=int(settings["num_levels"]),
+    step=1,
+)
+
+save_settings_btn = st.sidebar.button("Save Settings")
+manual_refresh_btn = st.sidebar.button("Run OI Refresh Now")
+
+try:
+    weights = [float(x.strip()) for x in weights_text.split(",") if x.strip()]
+except Exception:
+    weights = DEFAULT_EXPIRATION_WEIGHTS
+    st.sidebar.warning("Invalid weights format. Using defaults.")
+
+if save_settings_btn:
+    payload = {
+        "tickers": tickers or DEFAULT_TICKERS,
+        "weights": weights,
+        "max_distance": max_distance,
+        "num_levels": int(num_levels),
     }
+    save_json(SETTINGS_FILE, payload)
+    st.sidebar.success("Settings saved.")
+
+if manual_refresh_btn:
+    try:
+        refresh_oi_data()
+        st.sidebar.success("OI refresh completed.")
+    except Exception as e:
+        st.sidebar.error(f"OI refresh failed: {e}")
+
+status = load_json(REFRESH_STATUS_FILE, {})
+st.sidebar.write("### Last OI Refresh")
+st.sidebar.write(status.get("last_refresh_ny", "No refresh yet"))
+
+tab1, tab2 = st.tabs(["Dashboard", "Charts"])
+
+ticker_data = {}
+
+for ticker in (tickers or DEFAULT_TICKERS):
+    oi_path = os.path.join(DATA_CACHE_DIR, f"oi_{ticker}.json")
+    oi_payload = load_json(oi_path, {})
+
+    if not oi_payload:
+        ticker_data[ticker] = {"error": "No OI cache found yet. Run the morning refresh first."}
+        continue
+
+    try:
+        gamma = cached_gamma(
+            ticker,
+            tuple(weights),
+            float(max_distance),
+            int(num_levels),
+        )
+
+        oi_for_confluence = {
+            "key_level": oi_payload.get("key_level"),
+            "top_resistances": pd.DataFrame(oi_payload.get("top_resistances", [])),
+            "top_supports": pd.DataFrame(oi_payload.get("top_supports", [])),
+            "spot": oi_payload.get("oi_fixed_spot"),
+        }
+
+        confluence = build_confluence_from_results(
+            ticker_symbol=ticker,
+            oi=oi_for_confluence,
+            gamma=gamma,
+        )
+
+        ticker_data[ticker] = {
+            "oi_payload": oi_payload,
+            "gamma": gamma,
+            "confluence": confluence,
+        }
+    except Exception as e:
+        ticker_data[ticker] = {"error": str(e)}
+
+with tab1:
+    for ticker in (tickers or DEFAULT_TICKERS):
+        st.header(ticker)
+        data = ticker_data.get(ticker, {})
+        if "error" in data:
+            st.error(f"{ticker}: {data['error']}")
+            st.divider()
+            continue
+
+        render_oi_section(data["oi_payload"])
+        render_gamma_section(data["gamma"])
+        render_confluence_section(data["confluence"])
+        st.divider()
+
+with tab2:
+    st.write("Charts show the last 24 hours of 1-minute bars including premarket, market hours, aftermarket, and overnight.")
+
+    for ticker in (tickers or DEFAULT_TICKERS):
+        st.header(f"{ticker} Chart")
+        data = ticker_data.get(ticker, {})
+        if "error" in data:
+            st.error(f"{ticker}: {data['error']}")
+            st.divider()
+            continue
+
+        try:
+            hist = cached_intraday_history(ticker)
+            levels_df = data["confluence"]["levels"].copy()
+
+            cols = [
+                "side",
+                "level",
+                "level_gex",
+                "level_vex",
+                "static_score",
+                "static_grade",
+                "dynamic_score",
+                "hold_break_bias",
+                "action",
+                "grade",
+                "gamma_strength",
+            ]
+            cols = [c for c in cols if c in levels_df.columns]
+
+            fig = build_chart_for_ticker(
+                ticker=ticker,
+                hist_df=hist,
+                levels_df=levels_df,
+                current_spot=float(data["gamma"]["spot"]),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.write("### Level Summary")
+            st.dataframe(levels_df[cols], use_container_width=True, hide_index=True)
+
+        except Exception as e:
+            st.error(f"{ticker} chart error: {e}")
+
+        st.divider()
