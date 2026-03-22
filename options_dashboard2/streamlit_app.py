@@ -21,7 +21,7 @@ from confluence_levels import build_confluence_from_results
 
 st.set_page_config(page_title="Options Dashboard", layout="wide")
 st.title("Options Dashboard")
-st.caption("Static OI from 9:30 AM NY open + dynamic Gamma + dynamic confluence scoring")
+st.caption("Static OI from 9:30 AM NY open + dynamic Gamma + confluence scoring")
 
 st_autorefresh(interval=900000, key="dashboard_refresh")
 
@@ -90,60 +90,35 @@ def grade_color(value):
     return mapping.get(value, "#616161")
 
 
-def confidence_color(value):
-    mapping = {
-        "HIGH": "#00C853",
-        "MEDIUM": "#FFD600",
-        "LOW": "#FB8C00",
-        "AVOID": "#D50000",
-    }
-    return mapping.get(value, "#616161")
-
-
-def hold_break_color(value):
-    mapping = {
-        "LIKELY TO HOLD": "#1B5E20",
-        "CAN HOLD, BUT MESSY": "#1565C0",
-        "LIKELY TO BREAK": "#B71C1C",
-        "NEUTRAL": "#616161",
-    }
-    return mapping.get(value, "#616161")
-
-
 def build_level_strength_card(row):
     grade = row.get("grade", "")
     gamma_strength = row.get("gamma_strength", "")
     side = row.get("side", "")
     level = row.get("level", "")
-    bias = row.get("hold_break_bias", "")
 
     if gamma_strength == "STRONG_GAMMA_BACKED":
-        return f"{grade} | {side} {level} | VERY STRONG | {bias}"
+        return f"{grade} | {side} {level} | VERY STRONG"
     if gamma_strength == "STRONG_BUT_VOLATILE":
-        return f"{grade} | {side} {level} | STRONG BUT VOLATILE | {bias}"
+        return f"{grade} | {side} {level} | STRONG BUT VOLATILE"
     if gamma_strength == "GAMMA_BACKED":
-        return f"{grade} | {side} {level} | BACKED | {bias}"
+        return f"{grade} | {side} {level} | BACKED"
     if gamma_strength == "WEAK_GAMMA_SUPPORT":
-        return f"{grade} | {side} {level} | WEAK SUPPORT | {bias}"
+        return f"{grade} | {side} {level} | WEAK SUPPORT"
     if gamma_strength == "WEAK_GAMMA_RESISTANCE":
-        return f"{grade} | {side} {level} | WEAK RESISTANCE | {bias}"
+        return f"{grade} | {side} {level} | WEAK RESISTANCE"
     if gamma_strength == "NO_GAMMA_BACKING":
-        return f"{grade} | {side} {level} | LIKELY FAIL | {bias}"
-    return f"{grade} | {side} {level} | {bias}"
+        return f"{grade} | {side} {level} | LIKELY FAIL"
+    return f"{grade} | {side} {level}"
 
 
 def style_trade_quality_table(df: pd.DataFrame):
     def style_grade(val):
-        return f"background-color: {grade_color(val)}; color: white; font-weight: bold;"
+        color = grade_color(val)
+        return f"background-color: {color}; color: white; font-weight: bold;"
 
     def style_gamma_strength(val):
-        return f"background-color: {gamma_strength_color(val)}; color: white; font-weight: bold;"
-
-    def style_confidence(val):
-        return f"background-color: {confidence_color(val)}; color: white; font-weight: bold;"
-
-    def style_hold_break(val):
-        return f"background-color: {hold_break_color(val)}; color: white; font-weight: bold;"
+        color = gamma_strength_color(val)
+        return f"background-color: {color}; color: white; font-weight: bold;"
 
     def style_level_strength_card(val):
         text = str(val)
@@ -163,10 +138,8 @@ def style_trade_quality_table(df: pd.DataFrame):
 
     styled = (
         df.style
-        .map(style_gamma_strength, subset=["gamma_strength"])
         .map(style_grade, subset=["grade"])
-        .map(style_confidence, subset=["confidence"])
-        .map(style_hold_break, subset=["hold_break_bias"])
+        .map(style_gamma_strength, subset=["gamma_strength"])
         .map(style_level_strength_card, subset=["level_strength_card"])
     )
     return styled
@@ -336,12 +309,9 @@ def render_confluence_section(confluence):
         column_order = [
             "side",
             "level",
-            "level_gex",
+            "gamma_match",
             "gamma_strength",
-            "dynamic_score",
             "grade",
-            "confidence",
-            "hold_break_bias",
             "level_strength_card",
         ]
         column_order = [col for col in column_order if col in display_levels.columns]
