@@ -103,17 +103,20 @@ def _download_yf_intraday(
 
 def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
     """
-    Returns the last rolling 24 hours of available 1-minute data from yfinance,
-    including premarket, market hours, aftermarket, and overnight whenever available.
+    Returns:
+    - Last rolling 24 hours if available
+    - Otherwise: most recent available data (weekends/holidays)
 
-    This does NOT force a regular-session-only filter.
-    It also does NOT force a 'latest session' fallback.
-    It simply returns everything available inside the last 24 hours.
+    Includes:
+    - premarket
+    - market hours
+    - aftermarket
+    - overnight (if exists)
     """
+
     end_dt = datetime.now(NY_TZ)
     cutoff = end_dt - timedelta(hours=24)
 
-    # Use 5d so weekends / holidays still have enough history available
     df = _download_yf_intraday(
         ticker_symbol=ticker_symbol,
         period="5d",
@@ -124,13 +127,14 @@ def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
     if df.empty:
         raise ValueError(f"No intraday data found for {ticker_symbol}")
 
-    df = df[df["datetime"] >= cutoff].copy()
+    # Try strict last 24h
+    df_24h = df[df["datetime"] >= cutoff].copy()
 
-    if df.empty:
-        raise ValueError(f"No last-24h data found for {ticker_symbol}")
+    if not df_24h.empty:
+        return df_24h.sort_values("datetime").reset_index(drop=True)
 
-    df = df.sort_values("datetime").reset_index(drop=True)
-    return df
+    # 🔥 FALLBACK: use most recent data available
+    return df.sort_values("datetime").reset_index(drop=True)
 
 
 def get_current_spot_price(ticker_symbol: str) -> float:
