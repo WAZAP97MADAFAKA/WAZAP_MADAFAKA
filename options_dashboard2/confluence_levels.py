@@ -21,11 +21,11 @@ def normalize(value, max_value):
 
 
 def classify_score(score):
-    if score >= 85:
+    if score >= 80:
         return "A+"
-    if score >= 70:
+    if score >= 67:
         return "A"
-    if score >= 55:
+    if score >= 52:
         return "B"
     return "SKIP"
 
@@ -79,11 +79,11 @@ def classify_gamma_strength(side, has_match, gamma_flip, spot, level_gex):
 
 
 def confidence_label(score):
-    if score >= 85:
+    if score >= 80:
         return "HIGH"
-    if score >= 70:
+    if score >= 67:
         return "MEDIUM"
-    if score >= 55:
+    if score >= 52:
         return "LOW"
     return "AVOID"
 
@@ -137,7 +137,6 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
 
     max_oi_woi = max(all_oi_woi) if all_oi_woi else 0.0
     max_gamma_abs = max(all_gamma_abs) if all_gamma_abs else 0.0
-    max_distance = max(abs(spot - s) for s in oi_supports + oi_resistances) if (oi_supports or oi_resistances) else 1.0
 
     scored_rows = []
 
@@ -149,37 +148,34 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
             row = oi_df[oi_df["strike"] == level].iloc[0]
 
             oi_weighted = float(row["weighted_open_interest"]) if "weighted_open_interest" in row else 0.0
-            oi_strength_score = normalize(oi_weighted, max_oi_woi) * 25.0
+            oi_strength_score = normalize(oi_weighted, max_oi_woi) * 35.0
 
             match = nearest_level_match(level, gamma_list, tolerance)
             has_match = match is not None
 
             level_gex = get_level_gex(level, gamma_df, tolerance)
-            gamma_magnitude_score = normalize(safe_abs(level_gex), max_gamma_abs) * 25.0 if has_match else 0.0
+            gamma_magnitude_score = normalize(safe_abs(level_gex), max_gamma_abs) * 30.0 if has_match else 0.0
 
             regime_score = 0.0
             if gamma_flip is not None:
                 if side == "SUPPORT" and spot > gamma_flip:
-                    regime_score = 15.0
+                    regime_score = 18.0
                 elif side == "RESISTANCE" and spot < gamma_flip:
-                    regime_score = 15.0
+                    regime_score = 18.0
                 elif side == "SUPPORT" and spot < gamma_flip:
-                    regime_score = 3.0
+                    regime_score = 4.0
                 elif side == "RESISTANCE" and spot > gamma_flip:
-                    regime_score = 3.0
+                    regime_score = 4.0
             else:
                 regime_score = 8.0
-
-            distance_to_spot = abs(spot - level)
-            proximity_score = (1.0 - min(distance_to_spot / max(max_distance, 1.0), 1.0)) * 15.0
 
             key_score = 0.0
             if oi["key_level"] is not None:
                 distance_to_key = abs(float(oi["key_level"]) - level)
                 if distance_to_key <= tolerance:
-                    key_score = 10.0
+                    key_score = 7.0
                 elif distance_to_key <= tolerance * 2:
-                    key_score = 5.0
+                    key_score = 3.0
 
             sign_bonus = 0.0
             if level_gex is not None:
@@ -187,22 +183,21 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
                     if gamma_flip is not None and spot > gamma_flip and level_gex >= 0:
                         sign_bonus = 10.0
                     elif gamma_flip is not None and spot > gamma_flip and level_gex < 0:
-                        sign_bonus = 4.0
+                        sign_bonus = 5.0
                     elif gamma_flip is not None and spot < gamma_flip and level_gex < 0:
-                        sign_bonus = -8.0
+                        sign_bonus = -10.0
                 elif side == "RESISTANCE":
                     if gamma_flip is not None and spot < gamma_flip and level_gex < 0:
                         sign_bonus = 10.0
                     elif gamma_flip is not None and spot < gamma_flip and level_gex >= 0:
-                        sign_bonus = 4.0
+                        sign_bonus = 5.0
                     elif gamma_flip is not None and spot > gamma_flip and level_gex < 0:
-                        sign_bonus = -8.0
+                        sign_bonus = -10.0
 
             dynamic_score = round(
                 oi_strength_score
                 + gamma_magnitude_score
                 + regime_score
-                + proximity_score
                 + key_score
                 + sign_bonus,
                 1
@@ -218,7 +213,6 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
 
             reasons = [
                 f"OI strength {oi_weighted:,.0f}",
-                f"Distance to spot {distance_to_spot:.2f}",
             ]
 
             if has_match:
@@ -237,6 +231,17 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
             if oi["key_level"] is not None:
                 reasons.append(f"OI key {oi['key_level']}")
 
+            if gamma_strength == "STRONG_GAMMA_BACKED":
+                reasons.append("Regime and GEX support the level")
+            elif gamma_strength == "STRONG_BUT_VOLATILE":
+                reasons.append("Regime supports level, but local GEX is unstable")
+            elif gamma_strength == "WEAK_GAMMA_SUPPORT":
+                reasons.append("Gamma regime works against this support")
+            elif gamma_strength == "WEAK_GAMMA_RESISTANCE":
+                reasons.append("Gamma regime works against this resistance")
+            elif gamma_strength == "NO_GAMMA_BACKING":
+                reasons.append("No local gamma backing")
+
             scored_rows.append({
                 "side": side,
                 "level": level,
@@ -247,6 +252,8 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
                 "grade": classify_score(dynamic_score),
                 "confidence": confidence_label(dynamic_score),
                 "hold_break_bias": hold_break_bias(side, gamma_strength, gamma_flip, spot),
+                "distance_to_spot": round(abs(spot - level), 2),
+                "distance_to_key": round(abs(float(oi["key_level"]) - level), 2) if oi["key_level"] is not None else None,
                 "reasons": ", ".join(reasons),
             })
 
@@ -259,7 +266,6 @@ def build_confluence_from_results(ticker_symbol: str, oi: dict, gamma: dict):
         "Skip if price reaches the level during major news",
         "Skip if the setup fights the gamma regime",
         "Skip if there is no OI + gamma confluence nearby",
-        "Skip if price is too far from the next target level",
         "Skip weak support longs when below gamma flip",
         "Skip weak resistance shorts when above gamma flip",
         "Be cautious with STRONG_BUT_VOLATILE levels because they can react sharply but not cleanly",
