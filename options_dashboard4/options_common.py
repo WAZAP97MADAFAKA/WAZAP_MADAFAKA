@@ -42,24 +42,12 @@ def obj_to_dict(obj):
     return obj
 
 
-def _flatten_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [
-            col[0].lower() if isinstance(col, tuple) and len(col) > 0 else str(col).lower()
-            for col in df.columns
-        ]
-    else:
-        df.columns = [str(c).lower() for c in df.columns]
-    return df
-
-
 def _download_yf_intraday(
     ticker_symbol: str,
     period: str,
     interval: str,
     prepost: bool,
 ) -> pd.DataFrame:
-
     df = yf.download(
         tickers=ticker_symbol,
         period=period,
@@ -75,16 +63,24 @@ def _download_yf_intraday(
 
     df = df.copy()
 
-    # 🔥 FIX: handle index as datetime
+    # yfinance normally returns a DatetimeIndex
     if not isinstance(df.index, pd.DatetimeIndex):
         raise ValueError(f"Unexpected yfinance index format for {ticker_symbol}")
 
     df = df.reset_index()
 
-    # normalize column names
-    df.columns = [str(c).lower() for c in df.columns]
+    # Flatten MultiIndex columns if present
+    if isinstance(df.columns, pd.MultiIndex):
+        flat_cols = []
+        for col in df.columns:
+            if isinstance(col, tuple):
+                flat_cols.append(str(col[0]).lower())
+            else:
+                flat_cols.append(str(col).lower())
+        df.columns = flat_cols
+    else:
+        df.columns = [str(c).lower() for c in df.columns]
 
-    # find datetime column (yfinance uses "Datetime" or "Date")
     if "datetime" in df.columns:
         dt_col = "datetime"
     elif "date" in df.columns:
@@ -94,60 +90,11 @@ def _download_yf_intraday(
 
     df["datetime"] = pd.to_datetime(df[dt_col], utc=True).dt.tz_convert(NY_TZ)
 
-    # make sure all required columns exist
     for col in ["open", "high", "low", "close", "volume"]:
         if col not in df.columns:
             df[col] = 0.0
 
     out = df[["datetime", "open", "high", "low", "close", "volume"]].copy()
-
-    for col in ["open", "high", "low", "close", "volume"]:
-        out[col] = pd.to_numeric(out[col], errors="coerce")
-
-    out = out.dropna(subset=["datetime", "close"]).reset_index(drop=True)
-
-    return out
-
-    df = yf.download(
-        tickers=ticker_symbol,
-        period=period,
-        interval=interval,
-        auto_adjust=False,
-        prepost=prepost,
-        progress=False,
-        threads=False,
-    )
-
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
-
-    df = df.copy()
-    df = _flatten_yf_columns(df)
-    df = df.reset_index()
-
-    dt_col = None
-    for candidate in ["datetime", "date"]:
-        if candidate in df.columns:
-            dt_col = candidate
-            break
-
-    if dt_col is None:
-        raise ValueError(f"Unexpected yfinance dataframe format for {ticker_symbol}")
-
-    df["datetime"] = pd.to_datetime(df[dt_col], utc=True).dt.tz_convert(NY_TZ)
-
-    rename_map = {}
-    for c in ["open", "high", "low", "close", "volume"]:
-        if c in df.columns:
-            rename_map[c] = c
-
-    out = df[["datetime"] + list(rename_map.keys())].copy()
-
-    for col in ["open", "high", "low", "close", "volume"]:
-        if col not in out.columns:
-            out[col] = 0.0
-
-    out = out[["datetime", "open", "high", "low", "close", "volume"]].copy()
 
     for col in ["open", "high", "low", "close", "volume"]:
         out[col] = pd.to_numeric(out[col], errors="coerce")
@@ -168,7 +115,6 @@ def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
     end_dt = datetime.now(NY_TZ)
     cutoff = end_dt - timedelta(hours=24)
 
-    # 2d is enough to capture the last 24h across session boundaries
     df = _download_yf_intraday(
         ticker_symbol=ticker_symbol,
         period="2d",
@@ -214,7 +160,6 @@ def get_latest_session_open_spot_price(ticker_symbol: str) -> float:
     if df.empty:
         raise ValueError(f"No session open data for {ticker_symbol}")
 
-    # regular session only
     df = df[
         ((df["datetime"].dt.hour > 9) | ((df["datetime"].dt.hour == 9) & (df["datetime"].dt.minute >= 30)))
         & (df["datetime"].dt.hour < 16)
