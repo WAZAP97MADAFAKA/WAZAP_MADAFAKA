@@ -49,7 +49,9 @@ def _aggs_to_df(aggs) -> pd.DataFrame:
         ts = d.get("timestamp")
         if ts is None:
             continue
+
         dt = pd.to_datetime(ts, unit="ms", utc=True).tz_convert(NY_TZ)
+
         rows.append(
             {
                 "datetime": dt,
@@ -60,13 +62,16 @@ def _aggs_to_df(aggs) -> pd.DataFrame:
                 "volume": float(d.get("volume", 0.0)),
             }
         )
+
     if not rows:
         return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+
     return pd.DataFrame(rows).sort_values("datetime").reset_index(drop=True)
 
 
 def _list_aggs_with_retry(client, ticker_symbol: str, start_date: str, end_date: str, retries: int = 3):
     last_error = None
+
     for attempt in range(retries):
         try:
             aggs = client.list_aggs(
@@ -81,18 +86,29 @@ def _list_aggs_with_retry(client, ticker_symbol: str, start_date: str, end_date:
         except Exception as e:
             last_error = e
             msg = str(e).lower()
+
             if "429" in msg or "too many" in msg or "rate" in msg:
                 time.sleep(2 * (attempt + 1))
                 continue
+
             raise
+
     raise last_error
 
 
-def get_intraday_history_last_two_sessions(ticker_symbol: str) -> pd.DataFrame:
+def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
+    """
+    Returns roughly the last 24 hours of minute data, including:
+    - premarket
+    - regular market
+    - aftermarket
+
+    No regular-session filter is applied.
+    """
     client = get_client()
 
     end_dt = datetime.now(NY_TZ)
-    start_dt = end_dt - timedelta(days=4)
+    start_dt = end_dt - timedelta(days=2)
 
     aggs = _list_aggs_with_retry(
         client=client,
@@ -101,27 +117,27 @@ def get_intraday_history_last_two_sessions(ticker_symbol: str) -> pd.DataFrame:
         end_date=end_dt.strftime("%Y-%m-%d"),
         retries=3,
     )
+
     df = _aggs_to_df(aggs)
 
     if df.empty:
         raise ValueError(f"No intraday data found for {ticker_symbol}")
 
-    df = df[
-        (df["datetime"].dt.hour > 9) | ((df["datetime"].dt.hour == 9) & (df["datetime"].dt.minute >= 30))
-    ]
-    df = df[df["datetime"].dt.hour < 16]
+    cutoff = end_dt - timedelta(hours=24)
+    df = df[df["datetime"] >= cutoff].copy()
 
     if df.empty:
-        raise ValueError(f"No regular-session intraday data found for {ticker_symbol}")
+        raise ValueError(f"No last-24h extended-hours data found for {ticker_symbol}")
 
     df["session_date"] = df["datetime"].dt.date
-    session_dates = sorted(df["session_date"].unique())
-    last_two = session_dates[-2:] if len(session_dates) >= 2 else session_dates
-    return df[df["session_date"].isin(last_two)].copy().reset_index(drop=True)
+    return df.reset_index(drop=True)
 
 
 def get_current_spot_price(ticker_symbol: str) -> float:
-    df = get_intraday_history_last_two_sessions(ticker_symbol)
+    """
+    Uses extended-hours spot from the last available minute bar in the last 24h.
+    """
+    df = get_intraday_history_last_24h_extended(ticker_symbol)
     if df.empty:
         raise ValueError(f"No current spot data for {ticker_symbol}")
     return float(df["close"].iloc[-1])
@@ -129,13 +145,13 @@ def get_current_spot_price(ticker_symbol: str) -> float:
 
 def get_latest_session_open_spot_price(ticker_symbol: str) -> float:
     """
-    Gets only the latest session's 9:30 open instead of pulling a broader minute range repeatedly.
-    Falls back to the first regular-session bar if exact 9:30 is missing.
+    Finds the latest regular-session 9:30 NY open from recent minute bars.
+    This is used to anchor OI.
     """
     client = get_client()
 
     end_dt = datetime.now(NY_TZ)
-    start_dt = end_dt - timedelta(days=4)
+    start_dt = end_dt - timedelta(days=5)
 
     aggs = _list_aggs_with_retry(
         client=client,
@@ -144,22 +160,24 @@ def get_latest_session_open_spot_price(ticker_symbol: str) -> float:
         end_date=end_dt.strftime("%Y-%m-%d"),
         retries=3,
     )
+
     df = _aggs_to_df(aggs)
 
     if df.empty:
         raise ValueError(f"No session open data for {ticker_symbol}")
 
-    df = df[
-        (df["datetime"].dt.hour > 9) | ((df["datetime"].dt.hour == 9) & (df["datetime"].dt.minute >= 30))
-    ]
-    df = df[df["datetime"].dt.hour < 16]
+    # regular session only for finding the official open
+    regular_df = df[
+        ((df["datetime"].dt.hour > 9) | ((df["datetime"].dt.hour == 9) & (df["datetime"].dt.minute >= 30)))
+        & (df["datetime"].dt.hour < 16)
+    ].copy()
 
-    if df.empty:
+    if regular_df.empty:
         raise ValueError(f"No regular-session intraday data found for {ticker_symbol}")
 
-    df["session_date"] = df["datetime"].dt.date
-    latest_session = max(df["session_date"])
-    day_df = df[df["session_date"] == latest_session].copy()
+    regular_df["session_date"] = regular_df["datetime"].dt.date
+    latest_session = max(regular_df["session_date"])
+    day_df = regular_df[regular_df["session_date"] == latest_session].copy()
 
     open_bar = day_df[
         (day_df["datetime"].dt.hour == 9) & (day_df["datetime"].dt.minute == 30)

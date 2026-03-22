@@ -18,7 +18,7 @@ from options_config import (
 from refresh_data import refresh_oi_data
 from gamma_exposure import get_gamma_levels
 from confluence_levels import build_confluence_from_results
-from options_common import get_intraday_history_last_two_sessions
+from options_common import get_intraday_history_last_24h_extended
 
 
 if "POLYGON_API_KEY" in st.secrets and "POLYGON_API_KEY" not in os.environ:
@@ -30,12 +30,8 @@ st.set_page_config(page_title="Options Dashboard 4", layout="wide")
 st.title("Options Dashboard 4")
 st.caption("Polygon/Massive-based OI + Gamma + VEX dashboard")
 
+# refresh every minute
 st_autorefresh(interval=60000, key="dashboard_refresh")
-
-
-@st.cache_data(ttl=60, show_spinner=False)
-def cached_intraday_history(ticker):
-    return get_intraday_history_last_two_sessions(ticker)
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -46,6 +42,11 @@ def cached_gamma(ticker, weights, max_distance, num_levels):
         max_distance=float(max_distance),
         num_levels=int(num_levels),
     )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_intraday_history(ticker):
+    return get_intraday_history_last_24h_extended(ticker)
 
 
 def load_json(path, fallback=None):
@@ -90,11 +91,16 @@ def get_regime_label(spot, gamma_flip, regime):
         return "NO FLIP DETECTED", "#9E9E9E", None
 
     distance_pct = abs(spot - gamma_flip) / spot * 100
+
     if distance_pct < 0.5:
         return "CHOP / TRANSITION", "#FFA726", distance_pct
     if distance_pct < 1.5:
-        return ("MODERATE BULLISH", "#66BB6A", distance_pct) if spot > gamma_flip else ("MODERATE BEARISH", "#EF5350", distance_pct)
-    return ("STRONG BULLISH", "#00C853", distance_pct) if spot > gamma_flip else ("STRONG BEARISH", "#D50000", distance_pct)
+        if spot > gamma_flip:
+            return "MODERATE BULLISH", "#66BB6A", distance_pct
+        return "MODERATE BEARISH", "#EF5350", distance_pct
+    if spot > gamma_flip:
+        return "STRONG BULLISH", "#00C853", distance_pct
+    return "STRONG BEARISH", "#D50000", distance_pct
 
 
 def get_gamma_mode_label(spot, gamma_flip, regime):
@@ -114,10 +120,14 @@ def get_gamma_mode_label(spot, gamma_flip, regime):
 
 def render_oi_section(payload):
     st.subheader("Static OI Map")
+
     c1, c2, c3 = st.columns(3)
     c1.metric("OI Fixed Spot", round(float(payload.get("oi_fixed_spot", 0.0)), 2))
     c2.metric("OI Key Level", payload.get("key_level", "N/A"))
     c3.metric("OI Last Refresh (NY)", payload.get("refreshed_at_ny", "N/A"))
+
+    if payload.get("refresh_mode"):
+        st.write(f"**OI Refresh Mode:** {payload.get('refresh_mode')}")
 
     res = pd.DataFrame(payload.get("top_resistances", []))
     sup = pd.DataFrame(payload.get("top_supports", []))
@@ -133,6 +143,7 @@ def render_oi_section(payload):
 
 def render_gamma_section(gamma):
     st.subheader("Dynamic Gamma + VEX Map")
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Current Spot", gamma.get("spot", "N/A"))
     c2.metric("Gamma Flip", gamma.get("gamma_flip", "None"))
@@ -151,34 +162,76 @@ def render_gamma_section(gamma):
     )
 
     st.markdown(
-        f"<div style='background-color:{regime_color};padding:12px;border-radius:10px;color:white;font-weight:bold;font-size:22px;text-align:center;'>REGIME STRENGTH: {regime_label}</div>",
+        f"""
+        <div style="
+            background-color:{regime_color};
+            padding:12px;
+            border-radius:10px;
+            color:white;
+            font-weight:bold;
+            font-size:22px;
+            text-align:center;">
+            REGIME STRENGTH: {regime_label}
+        </div>
+        """,
         unsafe_allow_html=True,
     )
+
     st.markdown(
-        f"<div style='background-color:{gamma_mode_color};padding:12px;border-radius:10px;color:white;font-weight:bold;font-size:18px;text-align:center;margin-top:8px;'>GAMMA MODE: {gamma_mode_label}</div>",
+        f"""
+        <div style="
+            background-color:{gamma_mode_color};
+            padding:12px;
+            border-radius:10px;
+            color:white;
+            font-weight:bold;
+            font-size:18px;
+            text-align:center;
+            margin-top:8px;">
+            GAMMA MODE: {gamma_mode_label}
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
     if distance_pct is not None:
         st.write(f"**Distance from Flip:** {distance_pct:.2f}%")
+
     st.write(f"**Net Weighted GEX:** {gamma.get('total_net_gex', 0):,.0f}")
     st.write(f"**Flip Source:** {gamma.get('flip_source', 'unknown')}")
 
     left, right = st.columns(2)
     with left:
         st.write("### Gamma Resistances")
-        st.dataframe(pd.DataFrame(gamma.get("top_resistances", [])), use_container_width=True, hide_index=True)
+        st.dataframe(
+            pd.DataFrame(gamma.get("top_resistances", [])),
+            use_container_width=True,
+            hide_index=True,
+        )
         st.write("### VEX Resistances")
-        st.dataframe(pd.DataFrame(gamma.get("top_vex_resistances", [])), use_container_width=True, hide_index=True)
+        st.dataframe(
+            pd.DataFrame(gamma.get("top_vex_resistances", [])),
+            use_container_width=True,
+            hide_index=True,
+        )
     with right:
         st.write("### Gamma Supports")
-        st.dataframe(pd.DataFrame(gamma.get("top_supports", [])), use_container_width=True, hide_index=True)
+        st.dataframe(
+            pd.DataFrame(gamma.get("top_supports", [])),
+            use_container_width=True,
+            hide_index=True,
+        )
         st.write("### VEX Supports")
-        st.dataframe(pd.DataFrame(gamma.get("top_vex_supports", [])), use_container_width=True, hide_index=True)
+        st.dataframe(
+            pd.DataFrame(gamma.get("top_vex_supports", [])),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def render_confluence_section(confluence):
     st.subheader("Confluence Engine")
+
     levels = confluence.get("levels", pd.DataFrame())
     if isinstance(levels, list):
         levels = pd.DataFrame(levels)
@@ -217,6 +270,7 @@ def render_confluence_section(confluence):
 
 def get_chart_outcome_label(row):
     bias = str(row.get("hold_break_bias", ""))
+
     if bias == "LIKELY TO HOLD":
         return "BOUNCE"
     if bias == "CAN HOLD, BUT MESSY":
@@ -228,6 +282,7 @@ def get_chart_outcome_label(row):
 
 def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
     fig = go.Figure()
+
     fig.add_trace(
         go.Scatter(
             x=hist_df["datetime"],
@@ -249,7 +304,11 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
         line_color = "#00C853" if side == "SUPPORT" else "#D50000"
         dash = "solid" if side == "SUPPORT" else "dot"
 
-        label_text = f"{level:.2f} | Score {score} | GEX {gex:,.0f} | VEX {vex:,.0f} | {outcome} | {action}"
+        label_text = (
+            f"{level:.2f} | Score {score} | "
+            f"GEX {gex:,.0f} | VEX {vex:,.0f} | "
+            f"{outcome} | {action}"
+        )
 
         fig.add_hline(
             y=level,
@@ -270,7 +329,7 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
     )
 
     fig.update_layout(
-        title=f"{ticker} - Current + Previous Trading Day",
+        title=f"{ticker} - Last 24h (Premarket + Market + Aftermarket)",
         xaxis_title="Time",
         yaxis_title="Price",
         height=600,
@@ -345,6 +404,7 @@ tab1, tab2 = st.tabs(["Dashboard", "Charts"])
 
 ticker_data = {}
 
+# Dashboard now uses gamma with extended-hours spot via options_common.get_current_spot_price()
 for ticker in (tickers or DEFAULT_TICKERS):
     oi_path = os.path.join(DATA_CACHE_DIR, f"oi_{ticker}.json")
     oi_payload = load_json(oi_path, {})
@@ -354,7 +414,6 @@ for ticker in (tickers or DEFAULT_TICKERS):
         continue
 
     try:
-        hist = cached_intraday_history(ticker)
         gamma = cached_gamma(
             ticker,
             tuple(weights),
@@ -368,6 +427,7 @@ for ticker in (tickers or DEFAULT_TICKERS):
             "top_supports": pd.DataFrame(oi_payload.get("top_supports", [])),
             "spot": oi_payload.get("oi_fixed_spot"),
         }
+
         confluence = build_confluence_from_results(
             ticker_symbol=ticker,
             oi=oi_for_confluence,
@@ -378,7 +438,6 @@ for ticker in (tickers or DEFAULT_TICKERS):
             "oi_payload": oi_payload,
             "gamma": gamma,
             "confluence": confluence,
-            "hist": hist,
         }
     except Exception as e:
         ticker_data[ticker] = {"error": str(e)}
@@ -398,6 +457,8 @@ with tab1:
         st.divider()
 
 with tab2:
+    st.write("Charts show the last 24 hours including premarket, market hours, and aftermarket.")
+
     for ticker in (tickers or DEFAULT_TICKERS):
         st.header(f"{ticker} Chart")
         data = ticker_data.get(ticker, {})
@@ -406,28 +467,35 @@ with tab2:
             st.divider()
             continue
 
-        levels_df = data["confluence"]["levels"].copy()
-        cols = [
-            "side",
-            "level",
-            "level_gex",
-            "level_vex",
-            "dynamic_score",
-            "hold_break_bias",
-            "action",
-            "grade",
-            "gamma_strength",
-        ]
-        cols = [c for c in cols if c in levels_df.columns]
+        try:
+            hist = cached_intraday_history(ticker)
+            levels_df = data["confluence"]["levels"].copy()
 
-        fig = build_chart_for_ticker(
-            ticker=ticker,
-            hist_df=data["hist"],
-            levels_df=levels_df,
-            current_spot=float(data["gamma"]["spot"]),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            cols = [
+                "side",
+                "level",
+                "level_gex",
+                "level_vex",
+                "dynamic_score",
+                "hold_break_bias",
+                "action",
+                "grade",
+                "gamma_strength",
+            ]
+            cols = [c for c in cols if c in levels_df.columns]
 
-        st.write("### Level Summary")
-        st.dataframe(levels_df[cols], use_container_width=True, hide_index=True)
+            fig = build_chart_for_ticker(
+                ticker=ticker,
+                hist_df=hist,
+                levels_df=levels_df,
+                current_spot=float(data["gamma"]["spot"]),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.write("### Level Summary")
+            st.dataframe(levels_df[cols], use_container_width=True, hide_index=True)
+
+        except Exception as e:
+            st.error(f"{ticker} chart error: {e}")
+
         st.divider()
