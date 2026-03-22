@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -64,19 +65,41 @@ def _aggs_to_df(aggs) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("datetime").reset_index(drop=True)
 
 
+def _list_aggs_with_retry(client, ticker_symbol: str, start_date: str, end_date: str, retries: int = 3):
+    last_error = None
+    for attempt in range(retries):
+        try:
+            aggs = client.list_aggs(
+                ticker_symbol,
+                1,
+                "minute",
+                start_date,
+                end_date,
+                limit=5000,
+            )
+            return list(aggs)
+        except Exception as e:
+            last_error = e
+            msg = str(e).lower()
+            if "429" in msg or "too many" in msg or "rate" in msg:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+    raise last_error
+
+
 def get_intraday_history_last_two_sessions(ticker_symbol: str) -> pd.DataFrame:
     client = get_client()
 
     end_dt = datetime.now(NY_TZ)
-    start_dt = end_dt - timedelta(days=7)
+    start_dt = end_dt - timedelta(days=4)
 
-    aggs = client.list_aggs(
-        ticker_symbol,
-        1,
-        "minute",
-        start_dt.strftime("%Y-%m-%d"),
-        end_dt.strftime("%Y-%m-%d"),
-        limit=50000,
+    aggs = _list_aggs_with_retry(
+        client=client,
+        ticker_symbol=ticker_symbol,
+        start_date=start_dt.strftime("%Y-%m-%d"),
+        end_date=end_dt.strftime("%Y-%m-%d"),
+        retries=3,
     )
     df = _aggs_to_df(aggs)
 

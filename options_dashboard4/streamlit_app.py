@@ -18,7 +18,7 @@ from options_config import (
 from refresh_data import refresh_oi_data
 from gamma_exposure import get_gamma_levels
 from confluence_levels import build_confluence_from_results
-from options_common import get_intraday_history_last_two_sessions
+from options_common import get_intraday_history_last_two_sessions, get_current_spot_price
 
 
 if "POLYGON_API_KEY" in st.secrets and "POLYGON_API_KEY" not in os.environ:
@@ -34,18 +34,26 @@ st_autorefresh(interval=900000, key="dashboard_refresh")
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def cached_gamma(ticker, weights, max_distance, num_levels):
+def cached_intraday_history(ticker):
+    return get_intraday_history_last_two_sessions(ticker)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_spot_from_history(ticker):
+    df = cached_intraday_history(ticker)
+    if df.empty:
+        raise ValueError(f"No current spot data for {ticker}")
+    return float(df["close"].iloc[-1])
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_gamma(ticker, weights, max_distance, num_levels, current_spot):
     return get_gamma_levels(
         ticker_symbol=ticker,
         weights=list(weights),
         max_distance=float(max_distance),
         num_levels=int(num_levels),
     )
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def cached_intraday_history(ticker):
-    return get_intraday_history_last_two_sessions(ticker)
 
 
 def load_json(path, fallback=None):
@@ -263,7 +271,7 @@ st.sidebar.header("Settings")
 
 tickers = st.sidebar.multiselect(
     "Tickers",
-    options=["SPY", "QQQ", "NVDA", "AAPL", "AMZN", "GOOGL", "META", "TSLA", "MSFT", "NFLX", "INTC", "AMD", "BABA", "V", "MA", "PYPL", "DIS", "ADBE", "CRM", "ORCL"],
+    options=["SPY", "QQQ"],
     default=settings["tickers"] if settings["tickers"] else ["SPY", "QQQ"],
 )
 
@@ -331,7 +339,17 @@ for ticker in (tickers or DEFAULT_TICKERS):
         continue
 
     try:
-        gamma = cached_gamma(ticker, tuple(weights), float(max_distance), int(num_levels))
+        hist = cached_intraday_history(ticker)
+        current_spot = cached_spot_from_history(ticker)
+
+        gamma = cached_gamma(
+            ticker,
+            tuple(weights),
+            float(max_distance),
+            int(num_levels),
+            float(current_spot),
+        )
+
         oi_for_confluence = {
             "key_level": oi_payload.get("key_level"),
             "top_resistances": pd.DataFrame(oi_payload.get("top_resistances", [])),
@@ -339,7 +357,6 @@ for ticker in (tickers or DEFAULT_TICKERS):
             "spot": oi_payload.get("oi_fixed_spot"),
         }
         confluence = build_confluence_from_results(ticker_symbol=ticker, oi=oi_for_confluence, gamma=gamma)
-        hist = cached_intraday_history(ticker)
 
         ticker_data[ticker] = {
             "oi_payload": oi_payload,
