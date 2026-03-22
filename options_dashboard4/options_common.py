@@ -1,9 +1,9 @@
 import os
-import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import yfinance as yf
 from massive import RESTClient
 
 from options_config import NY_TIMEZONE
@@ -42,80 +42,94 @@ def obj_to_dict(obj):
     return obj
 
 
-def _aggs_to_df(aggs) -> pd.DataFrame:
-    rows = []
-    for a in aggs:
-        d = obj_to_dict(a)
-        ts = d.get("timestamp")
-        if ts is None:
-            continue
+def _flatten_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [
+            col[0].lower() if isinstance(col, tuple) and len(col) > 0 else str(col).lower()
+            for col in df.columns
+        ]
+    else:
+        df.columns = [str(c).lower() for c in df.columns]
+    return df
 
-        dt = pd.to_datetime(ts, unit="ms", utc=True).tz_convert(NY_TZ)
 
-        rows.append(
-            {
-                "datetime": dt,
-                "open": float(d.get("open", 0.0)),
-                "high": float(d.get("high", 0.0)),
-                "low": float(d.get("low", 0.0)),
-                "close": float(d.get("close", 0.0)),
-                "volume": float(d.get("volume", 0.0)),
-            }
-        )
+def _download_yf_intraday(
+    ticker_symbol: str,
+    period: str,
+    interval: str,
+    prepost: bool,
+) -> pd.DataFrame:
+    df = yf.download(
+        tickers=ticker_symbol,
+        period=period,
+        interval=interval,
+        auto_adjust=False,
+        prepost=prepost,
+        progress=False,
+        threads=False,
+    )
 
-    if not rows:
+    if df is None or df.empty:
         return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
 
-    return pd.DataFrame(rows).sort_values("datetime").reset_index(drop=True)
+    df = df.copy()
+    df = _flatten_yf_columns(df)
+    df = df.reset_index()
 
+    dt_col = None
+    for candidate in ["datetime", "date"]:
+        if candidate in df.columns:
+            dt_col = candidate
+            break
 
-def _list_aggs_with_retry(client, ticker_symbol: str, start_date: str, end_date: str, retries: int = 3):
-    last_error = None
+    if dt_col is None:
+        raise ValueError(f"Unexpected yfinance dataframe format for {ticker_symbol}")
 
-    for attempt in range(retries):
-        try:
-            aggs = client.list_aggs(
-                ticker_symbol,
-                1,
-                "minute",
-                start_date,
-                end_date,
-                limit=2500,
-            )
-            return list(aggs)
-        except Exception as e:
-            last_error = e
-            msg = str(e).lower()
+    df["datetime"] = pd.to_datetime(df[dt_col], utc=True).dt.tz_convert(NY_TZ)
 
-            if "429" in msg or "too many" in msg or "rate" in msg:
-                time.sleep(2 * (attempt + 1))
-                continue
+    rename_map = {}
+    for c in ["open", "high", "low", "close", "volume"]:
+        if c in df.columns:
+            rename_map[c] = c
 
-            raise
+    out = df[["datetime"] + list(rename_map.keys())].copy()
 
-    raise last_error
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col not in out.columns:
+            out[col] = 0.0
+
+    out = out[["datetime", "open", "high", "low", "close", "volume"]].copy()
+
+    for col in ["open", "high", "low", "close", "volume"]:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+
+    out = out.dropna(subset=["datetime", "close"]).reset_index(drop=True)
+    return out
 
 
 def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
-    client = get_client()
+    """
+    Last 24 hours including:
+    - premarket
+    - regular market
+    - aftermarket
 
+    Uses yfinance, not Polygon.
+    """
     end_dt = datetime.now(NY_TZ)
-    start_dt = end_dt - timedelta(days=2)
+    cutoff = end_dt - timedelta(hours=24)
 
-    aggs = _list_aggs_with_retry(
-        client=client,
+    # 2d is enough to capture the last 24h across session boundaries
+    df = _download_yf_intraday(
         ticker_symbol=ticker_symbol,
-        start_date=start_dt.strftime("%Y-%m-%d"),
-        end_date=end_dt.strftime("%Y-%m-%d"),
-        retries=3,
+        period="2d",
+        interval="1m",
+        prepost=True,
     )
-
-    df = _aggs_to_df(aggs)
 
     if df.empty:
         raise ValueError(f"No intraday data found for {ticker_symbol}")
 
-    cutoff = end_dt - timedelta(hours=24)
     df = df[df["datetime"] >= cutoff].copy()
 
     if df.empty:
@@ -127,40 +141,8 @@ def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
 
 def get_current_spot_price(ticker_symbol: str) -> float:
     """
-    IMPORTANT:
-    Dashboard spot should NOT use minute aggs.
-    This uses snapshot first, which is much lighter.
-    Falls back to previous close if needed.
+    Current displayed spot comes from yfinance extended-hours data.
     """
-    client = get_client()
-
-    # Try ticker snapshot
-    try:
-        snap = client.get_snapshot_ticker(ticker_symbol)
-        d = obj_to_dict(snap)
-
-        # Different client versions can shape fields differently
-        day = d.get("day", {}) or {}
-        last_trade = d.get("last_trade", {}) or {}
-        last_quote = d.get("last_quote", {}) or {}
-        min_data = d.get("min", {}) or {}
-        prev_day = d.get("prev_day", {}) or {}
-
-        candidates = [
-            last_trade.get("price"),
-            min_data.get("c"),
-            day.get("close"),
-            prev_day.get("close"),
-            last_quote.get("midpoint"),
-        ]
-
-        for value in candidates:
-            if value is not None:
-                return float(value)
-    except Exception:
-        pass
-
-    # Fallback: last value from 24h intraday history
     df = get_intraday_history_last_24h_extended(ticker_symbol)
     if df.empty:
         raise ValueError(f"No current spot data for {ticker_symbol}")
@@ -168,35 +150,33 @@ def get_current_spot_price(ticker_symbol: str) -> float:
 
 
 def get_latest_session_open_spot_price(ticker_symbol: str) -> float:
-    client = get_client()
-
-    end_dt = datetime.now(NY_TZ)
-    start_dt = end_dt - timedelta(days=5)
-
-    aggs = _list_aggs_with_retry(
-        client=client,
+    """
+    Uses yfinance to find the most recent regular-session 9:30 AM NY open.
+    This is used to anchor OI.
+    On weekends, this will use the last available trading session.
+    """
+    df = _download_yf_intraday(
         ticker_symbol=ticker_symbol,
-        start_date=start_dt.strftime("%Y-%m-%d"),
-        end_date=end_dt.strftime("%Y-%m-%d"),
-        retries=3,
+        period="5d",
+        interval="1m",
+        prepost=False,
     )
-
-    df = _aggs_to_df(aggs)
 
     if df.empty:
         raise ValueError(f"No session open data for {ticker_symbol}")
 
-    regular_df = df[
+    # regular session only
+    df = df[
         ((df["datetime"].dt.hour > 9) | ((df["datetime"].dt.hour == 9) & (df["datetime"].dt.minute >= 30)))
         & (df["datetime"].dt.hour < 16)
     ].copy()
 
-    if regular_df.empty:
+    if df.empty:
         raise ValueError(f"No regular-session intraday data found for {ticker_symbol}")
 
-    regular_df["session_date"] = regular_df["datetime"].dt.date
-    latest_session = max(regular_df["session_date"])
-    day_df = regular_df[regular_df["session_date"] == latest_session].copy()
+    df["session_date"] = df["datetime"].dt.date
+    latest_session = max(df["session_date"])
+    day_df = df[df["session_date"] == latest_session].copy()
 
     open_bar = day_df[
         (day_df["datetime"].dt.hour == 9) & (day_df["datetime"].dt.minute == 30)
@@ -213,6 +193,9 @@ def get_option_chain_snapshot_df(
     strike_price_gte: float | None = None,
     strike_price_lte: float | None = None,
 ) -> pd.DataFrame:
+    """
+    Options data still comes from Polygon/Massive.
+    """
     client = get_client()
 
     params = {"limit": 250}
@@ -267,6 +250,10 @@ def get_weighted_option_data_polygon(
     fixed_spot: float | None = None,
     max_distance: float | None = None,
 ):
+    """
+    Spot comes from yfinance.
+    Options chain / greeks come from Polygon.
+    """
     spot = float(fixed_spot) if fixed_spot is not None else get_current_spot_price(ticker_symbol)
 
     strike_gte = None

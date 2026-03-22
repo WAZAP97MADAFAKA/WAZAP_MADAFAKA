@@ -5,3 +5,5 @@ numpy
 plotly
 python-dateutil
 massive
+yfinance
+
