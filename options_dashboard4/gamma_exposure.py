@@ -1,0 +1,135 @@
+import pandas as pd
+
+from options_config import TICKER, EXPIRATION_WEIGHTS, MAX_DISTANCE, NUM_LEVELS
+from options_common import (
+    get_weighted_option_data_polygon,
+    filter_local_calls,
+    filter_local_puts,
+    choose_nearest_key_level,
+    get_local_range,
+)
+
+
+def estimate_gamma_flip(grouped_df: pd.DataFrame):
+    if grouped_df.empty:
+        return None
+
+    df = grouped_df.copy().sort_values("strike").reset_index(drop=True)
+    df["cum_weighted_gex"] = df["weighted_gex"].cumsum()
+
+    for i in range(1, len(df)):
+        prev_val = df.loc[i - 1, "cum_weighted_gex"]
+        curr_val = df.loc[i, "cum_weighted_gex"]
+
+        if prev_val == 0:
+            return float(df.loc[i - 1, "strike"])
+
+        if prev_val * curr_val < 0:
+            prev_strike = float(df.loc[i - 1, "strike"])
+            curr_strike = float(df.loc[i, "strike"])
+            weight = abs(prev_val) / (abs(prev_val) + abs(curr_val))
+            return round(prev_strike + (curr_strike - prev_strike) * weight, 2)
+
+    return None
+
+
+def get_gamma_levels(
+    ticker_symbol: str = TICKER,
+    weights=None,
+    max_distance: float = MAX_DISTANCE,
+    num_levels: int = NUM_LEVELS,
+):
+    if weights is None:
+        weights = EXPIRATION_WEIGHTS
+
+    spot, expirations, combined_calls, combined_puts = get_weighted_option_data_polygon(
+        ticker_symbol=ticker_symbol,
+        weights=weights,
+        fixed_spot=None,
+        max_distance=max_distance,
+    )
+
+    local_calls = filter_local_calls(combined_calls, spot, max_distance)
+    local_puts = filter_local_puts(combined_puts, spot, max_distance)
+
+    top_resistances = (
+        local_calls.sort_values("weighted_gex", ascending=False)
+        .head(num_levels)
+        .reset_index(drop=True)
+    )
+
+    top_supports = (
+        local_puts.sort_values("weighted_gex", ascending=True)
+        .head(num_levels)
+        .reset_index(drop=True)
+    )
+
+    top_vex_resistances = (
+        local_calls.sort_values("weighted_vex", ascending=False)
+        .head(num_levels)
+        .reset_index(drop=True)
+    )
+
+    top_vex_supports = (
+        local_puts.sort_values("weighted_vex", ascending=True)
+        .head(num_levels)
+        .reset_index(drop=True)
+    )
+
+    combined_all = pd.concat(
+        [
+            combined_calls[["strike", "weighted_gex"]].copy(),
+            combined_puts[["strike", "weighted_gex"]].copy(),
+        ],
+        ignore_index=True,
+    )
+    combined_all = (
+        combined_all.groupby("strike", as_index=False)
+        .agg(weighted_gex=("weighted_gex", "sum"))
+        .sort_values("strike")
+        .reset_index(drop=True)
+    )
+
+    gamma_flip = estimate_gamma_flip(combined_all)
+
+    key_candidates = pd.concat(
+        [
+            local_calls.assign(abs_weighted_gex=local_calls["weighted_gex"].abs()),
+            local_puts.assign(abs_weighted_gex=local_puts["weighted_gex"].abs()),
+        ],
+        ignore_index=True,
+    )
+    key_level = choose_nearest_key_level(key_candidates, spot, "abs_weighted_gex")
+    search_min, search_max = get_local_range(spot, max_distance)
+
+    regime = (
+        "ABOVE_FLIP_RANGE_BIAS"
+        if gamma_flip is not None and spot > gamma_flip
+        else "BELOW_FLIP_TREND_BIAS"
+        if gamma_flip is not None and spot < gamma_flip
+        else "NO_NEARBY_FLIP_DETECTED"
+    )
+
+    return {
+        "model": "GAMMA",
+        "ticker": ticker_symbol,
+        "spot": round(spot, 2),
+        "expirations_used": expirations,
+        "weights_used": weights,
+        "search_range": [round(search_min, 2), round(search_max, 2)],
+        "gamma_flip": gamma_flip,
+        "key_level": key_level,
+        "regime": regime,
+        "top_resistances": top_resistances[
+            ["strike", "weighted_gex", "total_gex", "weighted_vex", "total_vex", "total_open_interest", "weighted_volume"]
+        ],
+        "top_supports": top_supports[
+            ["strike", "weighted_gex", "total_gex", "weighted_vex", "total_vex", "total_open_interest", "weighted_volume"]
+        ],
+        "top_vex_resistances": top_vex_resistances[
+            ["strike", "weighted_vex", "total_vex", "weighted_gex", "total_gex"]
+        ],
+        "top_vex_supports": top_vex_supports[
+            ["strike", "weighted_vex", "total_vex", "weighted_gex", "total_gex"]
+        ],
+    }

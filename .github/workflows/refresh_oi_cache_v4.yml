@@ -1,0 +1,58 @@
+name: Refresh OI cache v4
+
+on:
+  schedule:
+    - cron: "35 13,14 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r options_dashboard4/requirements.txt
+
+      - name: Check New York time window
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import sys
+
+          now = datetime.now(ZoneInfo("America/New_York"))
+          print("Current NY time:", now.isoformat())
+
+          if now.weekday() >= 5:
+              print("Weekend. Exiting.")
+              sys.exit(0)
+
+          if not (now.hour == 9 and 30 <= now.minute <= 45):
+              print("Outside refresh window. Exiting.")
+              sys.exit(0)
+          PY
+
+      - name: Run refresh script
+        working-directory: options_dashboard4
+        run: python refresh_data.py
+
+      - name: Commit updated cache files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add options_dashboard4/data_cache/*.json
+          git diff --cached --quiet || git commit -m "Auto-refresh OI cache v4"
+          git push

@@ -1,0 +1,4 @@
+{"tickers": ["SPY", "QQQ", "NVDA", "AAPL", "AMZN", "GOOGL", "META", "TSLA", "MSFT", "NFLX", "INTC", "AMD", "BABA", "V", "MA", "PYPL", "DIS", "ADBE", "CRM", "ORCL"],
+"weights": [0.5, 0.3, 0.2],
+"max_distance": 30,
+"num_levels": 15}
