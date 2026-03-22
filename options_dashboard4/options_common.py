@@ -63,13 +63,11 @@ def _download_yf_intraday(
 
     df = df.copy()
 
-    # yfinance normally returns a DatetimeIndex
     if not isinstance(df.index, pd.DatetimeIndex):
         raise ValueError(f"Unexpected yfinance index format for {ticker_symbol}")
 
     df = df.reset_index()
 
-    # Flatten MultiIndex columns if present
     if isinstance(df.columns, pd.MultiIndex):
         flat_cols = []
         for col in df.columns:
@@ -105,19 +103,20 @@ def _download_yf_intraday(
 
 def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
     """
-    Last 24 hours including:
-    - premarket
-    - regular market
-    - aftermarket
+    Returns the last rolling 24 hours of available 1-minute data from yfinance,
+    including premarket, market hours, aftermarket, and overnight whenever available.
 
-    Uses yfinance, not Polygon.
+    This does NOT force a regular-session-only filter.
+    It also does NOT force a 'latest session' fallback.
+    It simply returns everything available inside the last 24 hours.
     """
     end_dt = datetime.now(NY_TZ)
     cutoff = end_dt - timedelta(hours=24)
 
+    # Use 5d so weekends / holidays still have enough history available
     df = _download_yf_intraday(
         ticker_symbol=ticker_symbol,
-        period="2d",
+        period="5d",
         interval="1m",
         prepost=True,
     )
@@ -128,15 +127,16 @@ def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
     df = df[df["datetime"] >= cutoff].copy()
 
     if df.empty:
-        raise ValueError(f"No last-24h extended-hours data found for {ticker_symbol}")
+        raise ValueError(f"No last-24h data found for {ticker_symbol}")
 
-    df["session_date"] = df["datetime"].dt.date
-    return df.reset_index(drop=True)
+    df = df.sort_values("datetime").reset_index(drop=True)
+    return df
 
 
 def get_current_spot_price(ticker_symbol: str) -> float:
     """
-    Current displayed spot comes from yfinance extended-hours data.
+    Current displayed spot comes from the latest available 1-minute bar
+    inside the last rolling 24 hours.
     """
     df = get_intraday_history_last_24h_extended(ticker_symbol)
     if df.empty:
