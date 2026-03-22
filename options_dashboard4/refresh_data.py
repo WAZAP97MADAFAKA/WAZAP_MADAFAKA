@@ -61,10 +61,6 @@ def refresh_oi_data():
     settings = load_settings()
     now_ny = datetime.now(ZoneInfo(NY_TIMEZONE))
 
-    # avoid manual refresh on weekends
-    if now_ny.weekday() >= 5:
-        raise ValueError("OI refresh is disabled on weekends. Use the last cached OI levels.")
-
     tickers = settings["tickers"]
     weights = settings["weights"]
     max_distance = settings["max_distance"]
@@ -73,6 +69,8 @@ def refresh_oi_data():
     saved_files = []
 
     for ticker in tickers:
+        # This already uses the latest available trading session.
+        # So on weekends it will use Friday's regular-session open.
         open_spot = get_latest_session_open_spot_price(ticker)
 
         result = get_oi_levels(
@@ -95,6 +93,7 @@ def refresh_oi_data():
             "top_resistances": dataframe_to_records(result["top_resistances"]),
             "top_supports": dataframe_to_records(result["top_supports"]),
             "refreshed_at_ny": now_ny.isoformat(),
+            "refresh_mode": "latest_available_session_open",
         }
 
         output_file = os.path.join(DATA_CACHE_DIR, f"oi_{ticker}.json")
@@ -108,10 +107,7 @@ def refresh_oi_data():
         "max_distance": max_distance,
         "num_levels": num_levels,
         "files_written": saved_files,
+        "refresh_mode": "latest_available_session_open",
     }
 
     save_json(REFRESH_STATUS_FILE, refresh_status)
-
-
-if __name__ == "__main__":
-    refresh_oi_data()
