@@ -419,7 +419,7 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
     return fig
 
 
-def build_gex_bar_chart(ticker, gamma, oi_key_level):
+def build_gex_bar_chart(ticker, gamma, oi_key_level, confluence_levels_df=None):
     curve = pd.DataFrame(gamma.get("gex_curve", []))
     if curve.empty:
         curve = pd.DataFrame(gamma.get("gex_curve_wide", []))
@@ -441,7 +441,7 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
     if not top_resistances_df.empty and "strike" in top_resistances_df.columns:
         resistance_strikes = set(top_resistances_df["strike"].astype(float).tolist())
 
-    def classify_sr(strike):
+    def classify_gamma_side(strike):
         strike = float(strike)
         if strike in support_strikes:
             return "SUPPORT"
@@ -449,7 +449,7 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
             return "RESISTANCE"
         return "OTHER"
 
-    curve["sr_type"] = curve["strike"].apply(classify_sr)
+    curve["gamma_side"] = curve["strike"].apply(classify_gamma_side)
 
     colors = ["#00C853" if float(v) >= 0 else "#D50000" for v in curve["weighted_gex"]]
 
@@ -552,12 +552,12 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
     for _, row in curve.iterrows():
         strike = float(row["strike"])
         gex_val = float(row["weighted_gex"])
-        sr_type = row["sr_type"]
+        gamma_side = row["gamma_side"]
 
-        if sr_type == "SUPPORT":
+        if gamma_side == "SUPPORT":
             bar_label = "S"
             label_color = "#00E676"
-        elif sr_type == "RESISTANCE":
+        elif gamma_side == "RESISTANCE":
             bar_label = "R"
             label_color = "#FF5252"
         else:
@@ -589,11 +589,90 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
         margin=dict(l=30, r=30, t=90, b=30),
     )
 
+    # -------------------------
+    # Build richer decision table
+    # -------------------------
     curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
+
+    # Map OI side from confluence table
+    curve["oi_side"] = "OTHER"
+    curve["agreement"] = "OTHER"
+    curve["weighted_vex"] = None
+    curve["vex_strength"] = None
+    curve["market_behavior"] = None
+    curve["best_trade_type"] = None
+    curve["direction"] = None
+    curve["trade_decision"] = None
+
+    if confluence_levels_df is not None and not confluence_levels_df.empty:
+        conf = confluence_levels_df.copy()
+        conf["level"] = conf["level"].astype(float)
+
+        level_map = conf.groupby("level").first()
+
+        for idx, row in curve.iterrows():
+            strike = float(row["strike"])
+            if strike in level_map.index:
+                matched = level_map.loc[strike]
+
+                oi_side = matched.get("side", "OTHER")
+                gamma_side = row["gamma_side"]
+
+                curve.at[idx, "oi_side"] = oi_side
+
+                if oi_side == gamma_side and oi_side != "OTHER":
+                    curve.at[idx, "agreement"] = "ALIGNED"
+                elif oi_side == "OTHER" and gamma_side != "OTHER":
+                    curve.at[idx, "agreement"] = "GAMMA_ONLY"
+                elif oi_side != gamma_side and oi_side != "OTHER" and gamma_side != "OTHER":
+                    curve.at[idx, "agreement"] = "FLIP"
+                else:
+                    curve.at[idx, "agreement"] = "OTHER"
+
+                curve.at[idx, "weighted_vex"] = matched.get("level_vex")
+                curve.at[idx, "vex_strength"] = matched.get("vex_strength")
+                curve.at[idx, "market_behavior"] = matched.get("market_behavior")
+                curve.at[idx, "best_trade_type"] = matched.get("best_trade_type")
+                curve.at[idx, "direction"] = matched.get("direction")
+
+                trade_type = matched.get("best_trade_type", "SKIP")
+                direction = matched.get("direction", "SKIP")
+                signal = matched.get("trade_now_signal", "PLAN")
+                grade = matched.get("grade", "SKIP")
+
+                if direction == "SKIP" or trade_type == "SKIP" or grade == "SKIP":
+                    decision = "SKIP"
+                elif signal == "TRADE NOW":
+                    decision = f"{trade_type} NOW"
+                elif signal == "WATCH":
+                    decision = f"WATCH {trade_type}"
+                else:
+                    decision = f"PLAN {trade_type}"
+
+                curve.at[idx, "trade_decision"] = decision
+            else:
+                gamma_side = row["gamma_side"]
+                curve.at[idx, "agreement"] = "GAMMA_ONLY" if gamma_side != "OTHER" else "OTHER"
+                curve.at[idx, "trade_decision"] = "SKIP"
+
     curve = curve.sort_values("abs_weighted_gex", ascending=False).reset_index(drop=True)
 
-    return fig, curve[["strike", "sr_type", "weighted_gex", "abs_weighted_gex"]]
-
+    return fig, curve[
+        [
+            "strike",
+            "oi_side",
+            "gamma_side",
+            "agreement",
+            "weighted_gex",
+            "abs_weighted_gex",
+            "weighted_vex",
+            "vex_strength",
+            "market_behavior",
+            "best_trade_type",
+            "direction",
+            "trade_decision",
+        ]
+    ]
 
 settings = load_settings()
 
@@ -784,6 +863,7 @@ with tab3:
             ticker=ticker,
             gamma=gamma,
             oi_key_level=oi_key_level,
+        confluence_levels_df=data["confluence"]["levels"].copy(),
         )
 
         if fig is None:
@@ -799,7 +879,20 @@ with tab3:
         st.plotly_chart(fig, use_container_width=True)
 
         st.write("### Strongest GEX Strikes")
-        gex_cols = ["strike", "sr_type", "weighted_gex", "abs_weighted_gex"]
+        gex_cols = [
+            "strike",
+            "oi_side",
+            "gamma_side",
+            "agreement",
+            "weighted_gex",
+            "abs_weighted_gex",
+            "weighted_vex",
+            "vex_strength",
+            "market_behavior",
+            "best_trade_type",
+            "direction",
+            "trade_decision",
+        ]
         gex_cols = [c for c in gex_cols if c in curve_df.columns]
         st.dataframe(curve_df[gex_cols].head(20), use_container_width=True, hide_index=True)
 
