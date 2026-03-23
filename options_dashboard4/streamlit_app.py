@@ -448,10 +448,16 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
     y_min = float(curve["weighted_gex"].min())
     y_max = float(curve["weighted_gex"].max())
     y_range = y_max - y_min if y_max != y_min else max(abs(y_max), 1.0)
-    label_y_top = y_max + (0.08 * y_range)
-    label_y_mid = y_max + (0.02 * y_range)
+
+    label_y_1 = y_max + (0.12 * y_range)
+    label_y_2 = y_max + (0.07 * y_range)
+    label_y_3 = y_max + (0.02 * y_range)
+    label_y_4 = y_max - (0.03 * y_range)
 
     gamma_key_level = gamma.get("key_level")
+    gamma_flip = gamma.get("gamma_flip")
+    current_spot = gamma.get("spot")
+
     if gamma_key_level is not None:
         fig.add_vline(
             x=float(gamma_key_level),
@@ -461,7 +467,7 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
         )
         fig.add_annotation(
             x=float(gamma_key_level),
-            y=label_y_top,
+            y=label_y_1,
             text=f"Gamma Key {float(gamma_key_level):.2f}",
             showarrow=False,
             font=dict(color="#FFD54F"),
@@ -479,11 +485,47 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
         )
         fig.add_annotation(
             x=float(oi_key_level),
-            y=label_y_mid,
+            y=label_y_2,
             text=f"OI Key {float(oi_key_level):.2f}",
             showarrow=False,
             font=dict(color="#64B5F6"),
             bgcolor="rgba(0,0,0,0.35)",
+            yanchor="bottom",
+            xanchor="right",
+        )
+
+    if gamma_flip is not None:
+        fig.add_vline(
+            x=float(gamma_flip),
+            line_width=2,
+            line_dash="longdash",
+            line_color="#FF9800",
+        )
+        fig.add_annotation(
+            x=float(gamma_flip),
+            y=label_y_3,
+            text=f"Gamma Flip {float(gamma_flip):.2f}",
+            showarrow=False,
+            font=dict(color="#FF9800"),
+            bgcolor="rgba(0,0,0,0.35)",
+            yanchor="bottom",
+            xanchor="left",
+        )
+
+    if current_spot is not None:
+        fig.add_vline(
+            x=float(current_spot),
+            line_width=2,
+            line_dash="solid",
+            line_color="#FFFFFF",
+        )
+        fig.add_annotation(
+            x=float(current_spot),
+            y=label_y_4,
+            text=f"Spot {float(current_spot):.2f}",
+            showarrow=False,
+            font=dict(color="#FFFFFF"),
+            bgcolor="rgba(0,0,0,0.45)",
             yanchor="bottom",
             xanchor="right",
         )
@@ -493,13 +535,14 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
         xaxis_title="Strike",
         yaxis_title="Weighted GEX",
         height=600,
-        margin=dict(l=30, r=30, t=70, b=30),
+        margin=dict(l=30, r=30, t=90, b=30),
     )
 
     curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
     curve = curve.sort_values("abs_weighted_gex", ascending=False).reset_index(drop=True)
 
     return fig, curve[["strike", "weighted_gex", "abs_weighted_gex"]]
+
 
 
 settings = load_settings()
