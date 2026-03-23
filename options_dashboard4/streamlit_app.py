@@ -390,7 +390,29 @@ def add_session_backgrounds(fig, hist_df):
     return fig
 
 
-def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot, forced_y_range=None, title_suffix="Last 24h (Premarket + Market + Aftermarket + Overnight)"):
+def get_shared_yaxis_config(forced_y_range):
+    if forced_y_range is None:
+        return {}
+
+    y_min, y_max = forced_y_range
+
+    # Use 5-point spacing so OI lines and strike bars line up visually
+    return {
+        "range": forced_y_range,
+        "tickmode": "linear",
+        "tick0": int(y_min // 5) * 5,
+        "dtick": 5,
+        "fixedrange": True,
+    }
+
+def build_chart_for_ticker(
+    ticker,
+    hist_df,
+    levels_df,
+    current_spot,
+    forced_y_range=None,
+    title_suffix="Last 24h (Premarket + Market + Aftermarket + Overnight)",
+):
     fig = go.Figure()
 
     fig.add_trace(
@@ -443,9 +465,7 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot, forced_y_ra
         annotation_position="left",
     )
 
-    yaxis_cfg = {}
-    if forced_y_range is not None:
-        yaxis_cfg["range"] = forced_y_range
+    shared_yaxis = get_shared_yaxis_config(forced_y_range)
 
     fig.update_layout(
         title=f"{ticker} - {title_suffix}",
@@ -453,12 +473,12 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot, forced_y_ra
         yaxis_title="Price / Strike",
         height=650,
         legend_title="Series",
-        margin=dict(l=30, r=30, t=50, b=30),
+        margin=dict(l=70, r=70, t=70, b=50),
         xaxis=dict(
             rangebreaks=[dict(bounds=["sat", "mon"])],
             rangeslider=dict(visible=False),
         ),
-        yaxis=yaxis_cfg,
+        yaxis=shared_yaxis,
     )
 
     return fig
@@ -627,18 +647,16 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
             yanchor="middle",
         )
 
-    yaxis_cfg = {}
-    if forced_y_range is not None:
-        yaxis_cfg["range"] = forced_y_range
+    shared_yaxis = get_shared_yaxis_config(forced_y_range)
 
     fig.update_layout(
         title=f"{ticker} - GEX by Strike (Hybrid)",
         xaxis_title="Weighted GEX",
         yaxis_title="Price / Strike",
         height=650,
-        margin=dict(l=40, r=140, t=80, b=40),
+        margin=dict(l=70, r=140, t=70, b=50),
         showlegend=False,
-        yaxis=yaxis_cfg,
+        yaxis=shared_yaxis,
     )
 
     fig.update_traces(cliponaxis=False)
