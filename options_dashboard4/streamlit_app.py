@@ -298,6 +298,14 @@ def get_chart_outcome_label(row):
     return "NEUTRAL"
 
 
+def drop_weekends(hist_df):
+    if hist_df.empty:
+        return hist_df
+    df = hist_df.copy()
+    df = df[df["datetime"].dt.weekday < 5].copy()
+    return df.reset_index(drop=True)
+
+
 def add_session_backgrounds(fig, hist_df):
     if hist_df.empty:
         return fig
@@ -310,37 +318,38 @@ def add_session_backgrounds(fig, hist_df):
 
     current_day = start_day
     while current_day <= end_day:
-        overnight_start = current_day
-        overnight_end = current_day + timedelta(hours=4)
+        if current_day.weekday() < 5:
+            overnight_start = current_day
+            overnight_end = current_day + timedelta(hours=4)
 
-        premarket_start = current_day + timedelta(hours=4)
-        premarket_end = current_day + timedelta(hours=9, minutes=30)
+            premarket_start = current_day + timedelta(hours=4)
+            premarket_end = current_day + timedelta(hours=9, minutes=30)
 
-        aftermarket_start = current_day + timedelta(hours=16)
-        aftermarket_end = current_day + timedelta(hours=20)
+            aftermarket_start = current_day + timedelta(hours=16)
+            aftermarket_end = current_day + timedelta(hours=20)
 
-        overnight2_start = current_day + timedelta(hours=20)
-        overnight2_end = current_day + timedelta(days=1)
+            overnight2_start = current_day + timedelta(hours=20)
+            overnight2_end = current_day + timedelta(days=1)
 
-        windows = [
-            (overnight_start, overnight_end, "rgba(80, 80, 120, 0.12)"),
-            (premarket_start, premarket_end, "rgba(70, 120, 180, 0.12)"),
-            (aftermarket_start, aftermarket_end, "rgba(150, 90, 170, 0.12)"),
-            (overnight2_start, overnight2_end, "rgba(80, 80, 120, 0.12)"),
-        ]
+            windows = [
+                (overnight_start, overnight_end, "rgba(80, 80, 120, 0.12)"),
+                (premarket_start, premarket_end, "rgba(70, 120, 180, 0.12)"),
+                (aftermarket_start, aftermarket_end, "rgba(150, 90, 170, 0.12)"),
+                (overnight2_start, overnight2_end, "rgba(80, 80, 120, 0.12)"),
+            ]
 
-        for x0, x1, color in windows:
-            left = max(x0, x_min)
-            right = min(x1, x_max)
-            if left < right:
-                fig.add_vrect(
-                    x0=left,
-                    x1=right,
-                    fillcolor=color,
-                    opacity=1,
-                    line_width=0,
-                    layer="below",
-                )
+            for x0, x1, color in windows:
+                left = max(x0, x_min)
+                right = min(x1, x_max)
+                if left < right:
+                    fig.add_vrect(
+                        x0=left,
+                        x1=right,
+                        fillcolor=color,
+                        opacity=1,
+                        line_width=0,
+                        layer="below",
+                    )
 
         current_day += timedelta(days=1)
 
@@ -348,6 +357,8 @@ def add_session_backgrounds(fig, hist_df):
 
 
 def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
+    hist_df = drop_weekends(hist_df)
+
     fig = go.Figure()
 
     fig.add_trace(
@@ -408,6 +419,7 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
         legend_title="Series",
         margin=dict(l=30, r=30, t=50, b=30),
     )
+
     return fig
 
 
@@ -420,7 +432,6 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
         return None, pd.DataFrame()
 
     curve = curve.sort_values("strike").reset_index(drop=True)
-
     colors = ["#00C853" if float(v) >= 0 else "#D50000" for v in curve["weighted_gex"]]
 
     fig = go.Figure()
@@ -434,6 +445,12 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
         )
     )
 
+    y_min = float(curve["weighted_gex"].min())
+    y_max = float(curve["weighted_gex"].max())
+    y_range = y_max - y_min if y_max != y_min else max(abs(y_max), 1.0)
+    label_y_top = y_max + (0.08 * y_range)
+    label_y_mid = y_max + (0.02 * y_range)
+
     gamma_key_level = gamma.get("key_level")
     if gamma_key_level is not None:
         fig.add_vline(
@@ -441,8 +458,16 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
             line_width=2,
             line_dash="dash",
             line_color="#FFD54F",
-            annotation_text=f"Gamma Key {float(gamma_key_level):.2f}",
-            annotation_position="top left",
+        )
+        fig.add_annotation(
+            x=float(gamma_key_level),
+            y=label_y_top,
+            text=f"Gamma Key {float(gamma_key_level):.2f}",
+            showarrow=False,
+            font=dict(color="#FFD54F"),
+            bgcolor="rgba(0,0,0,0.35)",
+            yanchor="bottom",
+            xanchor="left",
         )
 
     if oi_key_level is not None:
@@ -451,8 +476,16 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
             line_width=2,
             line_dash="dot",
             line_color="#64B5F6",
-            annotation_text=f"OI Key {float(oi_key_level):.2f}",
-            annotation_position="top right",
+        )
+        fig.add_annotation(
+            x=float(oi_key_level),
+            y=label_y_mid,
+            text=f"OI Key {float(oi_key_level):.2f}",
+            showarrow=False,
+            font=dict(color="#64B5F6"),
+            bgcolor="rgba(0,0,0,0.35)",
+            yanchor="bottom",
+            xanchor="right",
         )
 
     fig.update_layout(
@@ -460,7 +493,7 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
         xaxis_title="Strike",
         yaxis_title="Weighted GEX",
         height=600,
-        margin=dict(l=30, r=30, t=50, b=30),
+        margin=dict(l=30, r=30, t=70, b=30),
     )
 
     curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
@@ -586,7 +619,7 @@ with tab1:
         st.divider()
 
 with tab2:
-    st.write("Charts show the last 24 hours with different background colors for premarket, aftermarket, and overnight.")
+    st.write("Charts show the last 24 hours with different background colors for premarket, aftermarket, and overnight. Saturdays and Sundays are excluded.")
 
     for ticker in (tickers or DEFAULT_TICKERS):
         st.header(f"{ticker} Chart")
@@ -598,6 +631,7 @@ with tab2:
 
         try:
             hist = cached_intraday_history(ticker)
+            hist = drop_weekends(hist)
             levels_df = data["confluence"]["levels"].copy()
 
             cols = [
