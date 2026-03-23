@@ -1054,6 +1054,7 @@ with tab4:
                     levels_df=levels_df,
                     current_spot=float(gamma["spot"]),
                 )
+                
                 st.plotly_chart(
                     price_fig,
                     use_container_width=True,
