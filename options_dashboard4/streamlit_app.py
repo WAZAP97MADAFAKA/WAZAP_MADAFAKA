@@ -1769,6 +1769,25 @@ def render_hybrid_gex_table(enriched_df: pd.DataFrame, ticker: str):
         use_container_width=True,
     )
 
+def get_data_for_ticker(ticker):
+    oi_payload = build_oi_data(ticker)
+    gamma = build_gamma_data(ticker)
+
+    confluence = build_confluence_from_results(
+        ticker_symbol=ticker,
+        oi=oi_payload,
+        gamma=gamma
+    )
+
+    history = load_intraday_history(ticker)
+
+    return {
+        "oi_payload": oi_payload,
+        "gamma": gamma,
+        "confluence": confluence,
+        "history": history
+    }
+
 with tab3:
     st.header("Hybrid View")
 
@@ -1964,4 +1983,3 @@ with tab3:
         except Exception as e:
             st.error(f"{ticker} hybrid view error: {e}")
             st.divider()
-            
