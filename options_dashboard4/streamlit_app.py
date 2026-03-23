@@ -1230,6 +1230,9 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
     enriched_df["best_trade_type"] = None
     enriched_df["direction"] = None
     enriched_df["trade_decision"] = None
+    enriched_df["Entry-Stop-Target"] = None
+    enriched_df["distance_to_spot"] = None
+    enriched_df["highlight_flag"] = ""
 
     # Prepare levels lookup
     if not levels_df.empty:
@@ -1253,6 +1256,7 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
 
             enriched_df.at[idx, "oi_side"] = oi_side
             enriched_df.at[idx, "weighted_vex"] = weighted_vex
+            enriched_df.at[idx, "distance_to_spot"] = abs(strike - float(spot_price))
 
             # Agreement logic
             if oi_side == gamma_side and oi_side != "OTHER":
@@ -1267,9 +1271,7 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
             enriched_df.at[idx, "agreement"] = agreement
 
             # --- Trading logic ---
-            gex_val = 0.0 if pd.isna(row.get("weighted_gex")) else float(row.get("weighted_gex"))
             vex_val = 0.0 if pd.isna(weighted_vex) else float(weighted_vex)
-
             abs_vex = abs(vex_val)
 
             # VEX strength
@@ -1317,7 +1319,6 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
                 if gamma_side == "SUPPORT":
                     direction = "LONG"
                     best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
-
                 elif gamma_side == "RESISTANCE":
                     direction = "SHORT"
                     best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
@@ -1330,7 +1331,6 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
                     elif gamma_side == "RESISTANCE":
                         direction = "SHORT"
                         best_trade_type = "BREAKDOWN"
-
                 elif vex_strength == "MEDIUM":
                     if gamma_side == "SUPPORT":
                         direction = "LONG"
@@ -1338,7 +1338,6 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
                     elif gamma_side == "RESISTANCE":
                         direction = "SHORT"
                         best_trade_type = "WATCH_BREAKDOWN"
-
                 else:
                     direction = "SKIP"
                     best_trade_type = "SKIP"
@@ -1347,7 +1346,6 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
                 if gamma_side == "SUPPORT":
                     direction = "LONG"
                     best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
-
                 elif gamma_side == "RESISTANCE":
                     direction = "SHORT"
                     best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
@@ -1360,13 +1358,51 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
             else:
                 trade_decision = f"{best_trade_type} {direction}"
 
+            # Entry / Stop / Target as one column
+            est = "-"
+            if direction != "SKIP" and best_trade_type not in ["SKIP", "WATCH_BREAKOUT", "WATCH_BREAKDOWN"]:
+                if direction == "LONG":
+                    if best_trade_type == "BOUNCE":
+                        entry = strike + 0.10
+                        stop = strike - 0.40
+                        target = strike + 1.00
+                    elif best_trade_type == "SCALP":
+                        entry = strike + 0.05
+                        stop = strike - 0.25
+                        target = strike + 0.40
+                    elif best_trade_type == "BREAKOUT":
+                        entry = strike + 0.15
+                        stop = strike - 0.35
+                        target = strike + 1.20
+                    else:
+                        entry = stop = target = None
+                else: # SHORT / BREAKDOWN
+                    if best_trade_type == "BOUNCE":
+                        entry = strike - 0.10
+                        stop = strike + 0.40
+                        target = strike - 1.00
+                    elif best_trade_type == "SCALP":
+                        entry = strike - 0.05
+                        stop = strike + 0.25
+                        target = strike - 0.40
+                    elif best_trade_type == "BREAKDOWN":
+                        entry = strike - 0.15
+                        stop = strike + 0.35
+                        target = strike - 1.20
+                    else:
+                        entry = stop = target = None
+
+                if entry is not None:
+                    est = f"{entry:.2f} - {stop:.2f} - {target:.2f}"
+
             enriched_df.at[idx, "vex_strength"] = vex_strength
             enriched_df.at[idx, "market_behavior"] = market_behavior
             enriched_df.at[idx, "best_trade_type"] = best_trade_type
             enriched_df.at[idx, "direction"] = direction
             enriched_df.at[idx, "trade_decision"] = trade_decision
+            enriched_df.at[idx, "Entry-Stop-Target"] = est
 
-    # 🔥 Add SPOT row
+    # Add SPOT row
     spot_row = {
         "strike": float(spot_price),
         "oi_side": "SPOT",
@@ -1379,6 +1415,9 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
         "best_trade_type": "-",
         "direction": "-",
         "trade_decision": "WATCH",
+        "Entry-Stop-Target": "-",
+        "distance_to_spot": 0.0,
+        "highlight_flag": "SPOT",
     }
 
     enriched_df = pd.concat(
@@ -1386,11 +1425,28 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
         ignore_index=True
     )
 
-    # 🔥 Sort DESCENDING (top = higher strikes)
+    # Highlight nearest tradable levels
+    tradable_mask = (
+        (enriched_df["trade_decision"] != "SKIP") &
+        (enriched_df["trade_decision"] != "WATCH") &
+        (enriched_df["oi_side"] != "SPOT")
+    )
+
+    if tradable_mask.any():
+        nearest_idx = (
+            enriched_df.loc[tradable_mask]
+            .sort_values(["distance_to_spot", "strike"], ascending=[True, False])
+            .head(3)
+            .index
+        )
+        enriched_df.loc[nearest_idx, "highlight_flag"] = "HOT"
+
+    # Sort descending by strike
     enriched_df = enriched_df.sort_values("strike", ascending=False).reset_index(drop=True)
 
+    # Remove helper column before showing if you want to keep the table cleaner later,
+    # but leave it for styling logic if needed.
     return enriched_df
-
 
 
 settings = load_settings()
@@ -1567,11 +1623,54 @@ with tab2:
 
         st.divider()
 
+def render_hybrid_gex_table(enriched_df: pd.DataFrame):
+    if enriched_df.empty:
+        st.warning("No strongest GEX table data available.")
+        return
+
+    def highlight_rows(row):
+        if row.get("highlight_flag") == "SPOT":
+            return ["background-color: rgba(100, 181, 246, 0.25)"] * len(row)
+        if row.get("highlight_flag") == "HOT":
+            return ["background-color: rgba(255, 215, 64, 0.25)"] * len(row)
+        return [""] * len(row)
+
+    display_cols = [
+        "strike",
+        "oi_side",
+        "gamma_side",
+        "agreement",
+        "weighted_gex",
+        "weighted_vex",
+        "vex_strength",
+        "market_behavior",
+        "best_trade_type",
+        "direction",
+        "trade_decision",
+        "Entry-Stop-Target",
+    ]
+    display_cols = [c for c in display_cols if c in enriched_df.columns]
+
+    styled_df = (
+        enriched_df[display_cols + ["highlight_flag"]]
+        .head(20)
+        .style
+        .apply(highlight_rows, axis=1)
+        .hide(axis="index")
+        .hide(axis="columns", subset=["highlight_flag"])
+    )
+
+    st.dataframe(
+        styled_df,
+        use_container_width=True,
+    )
+
 with tab3:
     st.write("Hybrid view combines a 16-hour OI price chart with a GEX-by-strike chart inside one shared subplot figure, so levels line up exactly.")
 
     for ticker in (tickers or DEFAULT_TICKERS):
         st.header(f"{ticker} Hybrid View")
+
         data = ticker_data.get(ticker, {})
         if "error" in data:
             st.error(f"{ticker}: {data['error']}")
@@ -1579,11 +1678,15 @@ with tab3:
             continue
 
         try:
+            # -----------------------------
+            # DATA PREP
+            # -----------------------------
             hist_full = cached_intraday_history(ticker)
             hist_16h = slice_history_last_hours(hist_full, 16)
+
             levels_df = data["confluence"]["levels"].copy()
-            oi_key_level = data["oi_payload"].get("key_level")
             gamma = data["gamma"]
+            oi_key_level = data["oi_payload"].get("key_level")
 
             aligned_y_range = get_aligned_y_range(
                 hist_df=hist_16h,
@@ -1591,6 +1694,9 @@ with tab3:
                 current_spot=float(gamma["spot"]),
             )
 
+            # -----------------------------
+            # HYBRID CHART (SUBPLOT)
+            # -----------------------------
             hybrid_fig, curve_df = build_hybrid_subplot_figure(
                 ticker=ticker,
                 hist_df=hist_16h,
@@ -1606,7 +1712,11 @@ with tab3:
                 key=f"{ticker}_hybrid_subplot_chart",
             )
 
+            # -----------------------------
+            # GEX TABLE (ENRICHED + HIGHLIGHTED)
+            # -----------------------------
             st.write("### Strongest GEX Strikes")
+
             if not curve_df.empty:
                 enriched_df = enrich_gex_table(
                     curve_df,
@@ -1614,30 +1724,13 @@ with tab3:
                     spot_price=float(gamma["spot"]),
                 )
 
-                hybrid_cols = [
-                    "strike",
-                    "oi_side",
-                    "gamma_side",
-                    "agreement",
-                    "weighted_gex",
-                    "weighted_vex",
-                    "vex_strength",
-                    "market_behavior",
-                    "best_trade_type",
-                    "direction",
-                    "trade_decision",
-                ]
-                hybrid_cols = [c for c in hybrid_cols if c in enriched_df.columns]
+                render_hybrid_gex_table(enriched_df)
 
-                st.dataframe(
-                    enriched_df[hybrid_cols].head(20),
-                    use_container_width=True,
-                    hide_index=True,
-                )
             else:
                 st.warning(f"No strongest GEX table data available for {ticker}.")
 
             st.divider()
+
         except Exception as e:
             st.error(f"{ticker} hybrid view error: {e}")
             st.divider()
