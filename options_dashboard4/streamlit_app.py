@@ -1791,34 +1791,27 @@ def get_data_for_ticker(ticker):
 with tab3:
     st.header("Hybrid View")
 
-    import numpy as np
-    from datetime import timedelta
-
-    # =========================
-    # REGRESSION SETTINGS UI
-    # =========================
     st.subheader("Futures Mapping (Auto Regression)")
 
     col1, col2 = st.columns(2)
 
     with col1:
         st.markdown("### SPY → ES")
-        spy_x1 = st.number_input("SPY X1", value=650.0)
-        spy_x2 = st.number_input("SPY X2", value=660.0)
-        es_y1 = st.number_input("ES Y1", value=5200.0)
-        es_y2 = st.number_input("ES Y2", value=5280.0)
+        spy_x1 = st.number_input("SPY X1", value=650.0, key="spy_x1_tab3")
+        spy_x2 = st.number_input("SPY X2", value=660.0, key="spy_x2_tab3")
+        es_y1 = st.number_input("ES Y1", value=5200.0, key="es_y1_tab3")
+        es_y2 = st.number_input("ES Y2", value=5280.0, key="es_y2_tab3")
 
     with col2:
         st.markdown("### QQQ → MNQ")
-        qqq_x1 = st.number_input("QQQ X1", value=450.0)
-        qqq_x2 = st.number_input("QQQ X2", value=460.0)
-        mnq_y1 = st.number_input("MNQ Y1", value=15500.0)
-        mnq_y2 = st.number_input("MNQ Y2", value=15800.0)
+        qqq_x1 = st.number_input("QQQ X1", value=450.0, key="qqq_x1_tab3")
+        qqq_x2 = st.number_input("QQQ X2", value=460.0, key="qqq_x2_tab3")
+        mnq_y1 = st.number_input("MNQ Y1", value=15500.0, key="mnq_y1_tab3")
+        mnq_y2 = st.number_input("MNQ Y2", value=15800.0, key="mnq_y2_tab3")
 
-    # Compute regression
     def compute_regression(x1, x2, y1, y2):
         if x2 == x1:
-            return 0, 0
+            return 0.0, 0.0
         b = (y2 - y1) / (x2 - x1)
         a = y1 - b * x1
         return a, b
@@ -1826,157 +1819,72 @@ with tab3:
     spy_a, spy_b = compute_regression(spy_x1, spy_x2, es_y1, es_y2)
     qqq_a, qqq_b = compute_regression(qqq_x1, qqq_x2, mnq_y1, mnq_y2)
 
-    st.write(f"SPY→ES: a={round(spy_a,2)} b={round(spy_b,4)}")
-    st.write(f"QQQ→MNQ: a={round(qqq_a,2)} b={round(qqq_b,4)}")
+    st.write(f"SPY→ES: a={round(spy_a, 2)} b={round(spy_b, 4)}")
+    st.write(f"QQQ→MNQ: a={round(qqq_a, 2)} b={round(qqq_b, 4)}")
 
-    # =========================
-    # LOOP TICKERS
-    # =========================
-    for ticker in tickers:
+    regression_settings = {
+        "spy_x1": spy_x1,
+        "spy_x2": spy_x2,
+        "spy_y1": es_y1,
+        "spy_y2": es_y2,
+        "qqq_x1": qqq_x1,
+        "qqq_x2": qqq_x2,
+        "qqq_y1": mnq_y1,
+        "qqq_y2": mnq_y2,
+    }
+
+    for ticker in (tickers or DEFAULT_TICKERS):
+        st.subheader(f"{ticker} Hybrid View")
+
+        data = ticker_data.get(ticker, {})
+        if "error" in data:
+            st.error(f"{ticker}: {data['error']}")
+            st.divider()
+            continue
+
         try:
-            st.subheader(f"{ticker} Hybrid View")
-
-            data = get_data_for_ticker(ticker)
-
-            hist = data["history"].copy()
             levels_df = data["confluence"]["levels"].copy()
             gamma = data["gamma"]
+            oi_key_level = data["oi_payload"].get("key_level")
 
-            spot = float(gamma["spot"])
+            hist_full = cached_intraday_history(ticker)
+            hist_16h = slice_history_last_hours(hist_full, 16)
 
-            # =========================
-            # FILTER LAST 16 HOURS + REMOVE WEEKENDS
-            # =========================
-            hist = hist[hist["datetime"].dt.dayofweek < 5]
-            hist = hist[hist["datetime"] >= hist["datetime"].max() - timedelta(hours=16)]
-
-            # =========================
-            # GLOBAL Y RANGE (FIX ALIGNMENT)
-            # =========================
-            min_strike = levels_df["level"].min()
-            max_strike = levels_df["level"].max()
-
-            y_min = min(min_strike, hist["low"].min())
-            y_max = max(max_strike, hist["high"].max())
-
-            # =========================
-            # BUILD PRICE CHART
-            # =========================
-            price_fig = build_chart_for_ticker(
-                ticker=ticker,
-                hist_df=hist,
+            aligned_y_range = get_aligned_y_range(
+                hist_df=hist_16h,
                 levels_df=levels_df,
-                current_spot=spot
+                current_spot=float(gamma["spot"]),
             )
 
-            price_fig.update_yaxes(range=[y_min, y_max])
-
-            # =========================
-            # BUILD GEX CHART
-            # =========================
-            hybrid_fig, gex_df = build_hybrid_gex_chart(
+            hybrid_fig, curve_df = build_hybrid_subplot_figure(
                 ticker=ticker,
+                hist_df=hist_16h,
+                levels_df=levels_df,
                 gamma=gamma,
-                oi_key_level=data["oi_payload"].get("key_level"),
+                oi_key_level=oi_key_level,
+                forced_y_range=aligned_y_range,
             )
 
-            hybrid_fig.update_yaxes(range=[y_min, y_max])
+            st.plotly_chart(
+                hybrid_fig,
+                use_container_width=True,
+                key=f"{ticker}_hybrid_subplot_chart",
+            )
 
-            # =========================
-            # DISPLAY SIDE BY SIDE
-            # =========================
-            col_left, col_right = st.columns([1.2, 1])
+            st.write("### Strongest GEX Strikes")
 
-            with col_left:
-                st.plotly_chart(
-                    price_fig,
-                    use_container_width=True,
-                    key=f"{ticker}_price_chart"
+            if not curve_df.empty:
+                enriched_df = enrich_gex_table(
+                    curve_df,
+                    levels_df,
+                    spot_price=float(gamma["spot"]),
+                    ticker=ticker,
+                    settings_dict=regression_settings,
                 )
 
-            with col_right:
-                st.plotly_chart(
-                    hybrid_fig,
-                    use_container_width=True,
-                    key=f"{ticker}_gex_chart"
-                )
-
-            # =========================
-            # STRONGEST GEX TABLE
-            # =========================
-            st.subheader("Strongest GEX Strikes")
-
-            if gex_df is not None and not gex_df.empty:
-
-                df = gex_df.copy()
-
-                # Regression mapping
-                if ticker == "SPY":
-                    df["futures_price"] = spy_a + spy_b * df["strike"]
-                else:
-                    df["futures_price"] = qqq_a + qqq_b * df["strike"]
-
-                # Entry/Stop/Target
-                def build_trade(row):
-                    strike = row["strike"]
-                    direction = row.get("direction", "NONE")
-
-                    if direction == "LONG":
-                        entry = strike
-                        stop = strike - 1
-                        target = strike + 2
-                    elif direction == "SHORT":
-                        entry = strike
-                        stop = strike + 1
-                        target = strike - 2
-                    else:
-                        return "SKIP"
-
-                    return f"{entry} | {stop} | {target}"
-
-                df["Entry-Stop-Target"] = df.apply(build_trade, axis=1)
-
-                # Add SPOT row
-                spot_row = {
-                    "strike": spot,
-                    "oi_side": "SPOT",
-                    "gamma_side": "SPOT",
-                    "agreement": "SPOT",
-                    "weighted_gex": None,
-                    "abs_weighted_gex": None,
-                    "weighted_vex": None,
-                    "vex_strength": None,
-                    "market_behavior": None,
-                    "best_trade_type": None,
-                    "direction": None,
-                    "trade_decision": None,
-                    "Entry-Stop-Target": None,
-                    "futures_price": None
-                }
-
-                df = pd.concat([df, pd.DataFrame([spot_row])], ignore_index=True)
-
-                # Sort DESC
-                df = df.sort_values("strike", ascending=False)
-
-                # =========================
-                # HIGHLIGHTING
-                # =========================
-                def highlight_rows(row):
-                    if row["agreement"] == "ALIGNED":
-                        return ["background-color: rgba(0,200,0,0.2)"] * len(row)
-                    elif row["agreement"] == "FLIP":
-                        return ["background-color: rgba(255,165,0,0.2)"] * len(row)
-                    elif row["agreement"] == "SPOT":
-                        return ["background-color: rgba(0,150,255,0.3)"] * len(row)
-                    return [""] * len(row)
-
-                styled_df = df.style.apply(highlight_rows, axis=1)
-
-                st.dataframe(styled_df, use_container_width=True)
-
+                render_hybrid_gex_table(enriched_df, ticker=ticker)
             else:
-                st.warning(f"No GEX data available for {ticker}")
+                st.warning(f"No strongest GEX table data available for {ticker}.")
 
             st.divider()
 
