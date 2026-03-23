@@ -82,6 +82,48 @@ def load_settings():
     }
 
 
+def slice_history_last_hours(hist_df: pd.DataFrame, hours: int) -> pd.DataFrame:
+    if hist_df.empty:
+        return hist_df
+
+    df = hist_df.copy()
+    if "datetime" not in df.columns:
+        return df
+
+    df = df.sort_values("datetime").reset_index(drop=True)
+    end_time = df["datetime"].max()
+    start_time = end_time - pd.Timedelta(hours=hours)
+    df = df[df["datetime"] >= start_time].copy()
+    return df.reset_index(drop=True)
+
+
+def get_aligned_y_range(hist_df: pd.DataFrame, levels_df: pd.DataFrame, current_spot: float):
+    values = []
+
+    if hist_df is not None and not hist_df.empty and "close" in hist_df.columns:
+        values.extend(pd.to_numeric(hist_df["close"], errors="coerce").dropna().tolist())
+
+    if levels_df is not None and not levels_df.empty and "level" in levels_df.columns:
+        values.extend(pd.to_numeric(levels_df["level"], errors="coerce").dropna().tolist())
+
+    if current_spot is not None:
+        values.append(float(current_spot))
+
+    if not values:
+        return None
+
+    y_min = min(values)
+    y_max = max(values)
+    spread = y_max - y_min
+
+    if spread <= 0:
+        pad = max(abs(y_max) * 0.01, 1.0)
+    else:
+        pad = spread * 0.08
+
+    return [round(y_min - pad, 2), round(y_max + pad, 2)]
+
+
 def get_regime_label(spot, gamma_flip, regime):
     if gamma_flip is None:
         if regime == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
@@ -348,7 +390,7 @@ def add_session_backgrounds(fig, hist_df):
     return fig
 
 
-def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
+def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot, forced_y_range=None, title_suffix="Last 24h (Premarket + Market + Aftermarket + Overnight)"):
     fig = go.Figure()
 
     fig.add_trace(
@@ -401,273 +443,28 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
         annotation_position="left",
     )
 
+    yaxis_cfg = {}
+    if forced_y_range is not None:
+        yaxis_cfg["range"] = forced_y_range
+
     fig.update_layout(
-        title=f"{ticker} - Last 24h (Premarket + Market + Aftermarket + Overnight)",
+        title=f"{ticker} - {title_suffix}",
         xaxis_title="Time",
-        yaxis_title="Price",
+        yaxis_title="Price / Strike",
         height=650,
         legend_title="Series",
         margin=dict(l=30, r=30, t=50, b=30),
         xaxis=dict(
-            rangebreaks=[
-                dict(bounds=["sat", "mon"])
-            ]
+            rangebreaks=[dict(bounds=["sat", "mon"])],
+            rangeslider=dict(visible=False),
         ),
+        yaxis=yaxis_cfg,
     )
 
     return fig
 
 
-def build_gex_bar_chart(ticker, gamma, oi_key_level, confluence_levels_df=None):
-    curve = pd.DataFrame(gamma.get("gex_curve", []))
-    if curve.empty:
-        curve = pd.DataFrame(gamma.get("gex_curve_wide", []))
-
-    if curve.empty:
-        return None, pd.DataFrame()
-
-    curve = curve.sort_values("strike").reset_index(drop=True)
-
-    support_strikes = set()
-    resistance_strikes = set()
-
-    top_supports_df = pd.DataFrame(gamma.get("top_supports", []))
-    top_resistances_df = pd.DataFrame(gamma.get("top_resistances", []))
-
-    if not top_supports_df.empty and "strike" in top_supports_df.columns:
-        support_strikes = set(top_supports_df["strike"].astype(float).tolist())
-
-    if not top_resistances_df.empty and "strike" in top_resistances_df.columns:
-        resistance_strikes = set(top_resistances_df["strike"].astype(float).tolist())
-
-    def classify_gamma_side(strike):
-        strike = float(strike)
-        if strike in support_strikes:
-            return "SUPPORT"
-        if strike in resistance_strikes:
-            return "RESISTANCE"
-        return "OTHER"
-
-    curve["gamma_side"] = curve["strike"].apply(classify_gamma_side)
-
-    colors = ["#00C853" if float(v) >= 0 else "#D50000" for v in curve["weighted_gex"]]
-
-    fig = go.Figure()
-
-    fig.add_trace(
-        go.Bar(
-            x=curve["strike"],
-            y=curve["weighted_gex"],
-            marker_color=colors,
-            name="Weighted GEX",
-        )
-    )
-
-    y_min = float(curve["weighted_gex"].min())
-    y_max = float(curve["weighted_gex"].max())
-    y_range = y_max - y_min if y_max != y_min else max(abs(y_max), 1.0)
-
-    label_y_1 = y_max + (0.12 * y_range)
-    label_y_2 = y_max + (0.07 * y_range)
-    label_y_3 = y_max + (0.02 * y_range)
-    label_y_4 = y_max - (0.03 * y_range)
-
-    gamma_key_level = gamma.get("key_level")
-    gamma_flip = gamma.get("gamma_flip")
-    current_spot = gamma.get("spot")
-
-    if gamma_key_level is not None:
-        fig.add_vline(
-            x=float(gamma_key_level),
-            line_width=2,
-            line_dash="dash",
-            line_color="#FFD54F",
-        )
-        fig.add_annotation(
-            x=float(gamma_key_level),
-            y=label_y_1,
-            text=f"Gamma Key {float(gamma_key_level):.2f}",
-            showarrow=False,
-            font=dict(color="#FFD54F"),
-            bgcolor="rgba(0,0,0,0.35)",
-            yanchor="bottom",
-            xanchor="left",
-        )
-
-    if oi_key_level is not None:
-        fig.add_vline(
-            x=float(oi_key_level),
-            line_width=2,
-            line_dash="dot",
-            line_color="#64B5F6",
-        )
-        fig.add_annotation(
-            x=float(oi_key_level),
-            y=label_y_2,
-            text=f"OI Key {float(oi_key_level):.2f}",
-            showarrow=False,
-            font=dict(color="#64B5F6"),
-            bgcolor="rgba(0,0,0,0.35)",
-            yanchor="bottom",
-            xanchor="right",
-        )
-
-    if gamma_flip is not None:
-        fig.add_vline(
-            x=float(gamma_flip),
-            line_width=2,
-            line_dash="longdash",
-            line_color="#FF9800",
-        )
-        fig.add_annotation(
-            x=float(gamma_flip),
-            y=label_y_3,
-            text=f"Gamma Flip {float(gamma_flip):.2f}",
-            showarrow=False,
-            font=dict(color="#FF9800"),
-            bgcolor="rgba(0,0,0,0.35)",
-            yanchor="bottom",
-            xanchor="left",
-        )
-
-    if current_spot is not None:
-        fig.add_vline(
-            x=float(current_spot),
-            line_width=2,
-            line_dash="solid",
-            line_color="#FFFFFF",
-        )
-        fig.add_annotation(
-            x=float(current_spot),
-            y=label_y_4,
-            text=f"Spot {float(current_spot):.2f}",
-            showarrow=False,
-            font=dict(color="#FFFFFF"),
-            bgcolor="rgba(0,0,0,0.45)",
-            yanchor="bottom",
-            xanchor="right",
-        )
-
-    for _, row in curve.iterrows():
-        strike = float(row["strike"])
-        gex_val = float(row["weighted_gex"])
-        gamma_side = row["gamma_side"]
-
-        if gamma_side == "SUPPORT":
-            bar_label = "S"
-            label_color = "#00E676"
-        elif gamma_side == "RESISTANCE":
-            bar_label = "R"
-            label_color = "#FF5252"
-        else:
-            continue
-
-        if gex_val >= 0:
-            label_y = gex_val + (0.015 * y_range)
-            y_anchor = "bottom"
-        else:
-            label_y = gex_val - (0.015 * y_range)
-            y_anchor = "top"
-
-        fig.add_annotation(
-            x=strike,
-            y=label_y,
-            text=bar_label,
-            showarrow=False,
-            font=dict(color=label_color, size=12),
-            bgcolor="rgba(0,0,0,0.35)",
-            yanchor=y_anchor,
-            xanchor="center",
-        )
-
-    fig.update_layout(
-        title=f"{ticker} - GEX by Strike",
-        xaxis_title="Strike",
-        yaxis_title="Weighted GEX",
-        height=600,
-        margin=dict(l=30, r=30, t=90, b=30),
-    )
-
-    curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
-    curve["oi_side"] = "OTHER"
-    curve["agreement"] = "OTHER"
-    curve["weighted_vex"] = None
-    curve["vex_strength"] = None
-    curve["market_behavior"] = None
-    curve["best_trade_type"] = None
-    curve["direction"] = None
-    curve["trade_decision"] = None
-
-    if confluence_levels_df is not None and not confluence_levels_df.empty:
-        conf = confluence_levels_df.copy()
-        conf["level"] = conf["level"].astype(float)
-        level_map = conf.groupby("level").first()
-
-        for idx, row in curve.iterrows():
-            strike = float(row["strike"])
-            if strike in level_map.index:
-                matched = level_map.loc[strike]
-
-                oi_side = matched.get("side", "OTHER")
-                gamma_side = row["gamma_side"]
-                curve.at[idx, "oi_side"] = oi_side
-
-                if oi_side == gamma_side and oi_side != "OTHER":
-                    curve.at[idx, "agreement"] = "ALIGNED"
-                elif oi_side == "OTHER" and gamma_side != "OTHER":
-                    curve.at[idx, "agreement"] = "GAMMA_ONLY"
-                elif oi_side != gamma_side and oi_side != "OTHER" and gamma_side != "OTHER":
-                    curve.at[idx, "agreement"] = "FLIP"
-                else:
-                    curve.at[idx, "agreement"] = "OTHER"
-
-                curve.at[idx, "weighted_vex"] = matched.get("level_vex")
-                curve.at[idx, "vex_strength"] = matched.get("vex_strength")
-                curve.at[idx, "market_behavior"] = matched.get("market_behavior")
-                curve.at[idx, "best_trade_type"] = matched.get("best_trade_type")
-                curve.at[idx, "direction"] = matched.get("direction")
-
-                trade_type = matched.get("best_trade_type", "SKIP")
-                direction = matched.get("direction", "SKIP")
-                signal = matched.get("trade_now_signal", "PLAN")
-                grade = matched.get("grade", "SKIP")
-
-                if direction == "SKIP" or trade_type == "SKIP" or grade == "SKIP":
-                    decision = "SKIP"
-                elif signal == "TRADE NOW":
-                    decision = f"{trade_type} NOW"
-                elif signal == "WATCH":
-                    decision = f"WATCH {trade_type}"
-                else:
-                    decision = f"PLAN {trade_type}"
-
-                curve.at[idx, "trade_decision"] = decision
-            else:
-                gamma_side = row["gamma_side"]
-                curve.at[idx, "agreement"] = "GAMMA_ONLY" if gamma_side != "OTHER" else "OTHER"
-                curve.at[idx, "trade_decision"] = "SKIP"
-
-    curve = curve.sort_values("abs_weighted_gex", ascending=False).reset_index(drop=True)
-
-    return fig, curve[
-        [
-            "strike",
-            "oi_side",
-            "gamma_side",
-            "agreement",
-            "weighted_gex",
-            "abs_weighted_gex",
-            "weighted_vex",
-            "vex_strength",
-            "market_behavior",
-            "best_trade_type",
-            "direction",
-            "trade_decision",
-        ]
-    ]
-
-
-def build_hybrid_gex_chart(ticker, gamma, oi_key_level):
+def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
     curve = pd.DataFrame(gamma.get("gex_curve", []))
     if curve.empty:
         curve = pd.DataFrame(gamma.get("gex_curve_wide", []))
@@ -724,8 +521,19 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level):
             line_width=2,
             line_dash="dash",
             line_color="#FFD54F",
-            annotation_text=f"Gamma Key {float(gamma_key_level):.2f}",
-            annotation_position="right",
+        )
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=0.98,
+            y=float(gamma_key_level),
+            text=f"Gamma Key {float(gamma_key_level):.2f}",
+            showarrow=False,
+            font=dict(color="#FFD54F"),
+            bgcolor="rgba(0,0,0,0.35)",
+            xanchor="right",
+            yanchor="bottom",
+            xshift=-4,
         )
 
     if oi_key_level is not None:
@@ -734,8 +542,19 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level):
             line_width=2,
             line_dash="dot",
             line_color="#64B5F6",
-            annotation_text=f"OI Key {float(oi_key_level):.2f}",
-            annotation_position="left",
+        )
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=0.02,
+            y=float(oi_key_level),
+            text=f"OI Key {float(oi_key_level):.2f}",
+            showarrow=False,
+            font=dict(color="#64B5F6"),
+            bgcolor="rgba(0,0,0,0.35)",
+            xanchor="left",
+            yanchor="bottom",
+            xshift=4,
         )
 
     if gamma_flip is not None:
@@ -744,8 +563,19 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level):
             line_width=2,
             line_dash="longdash",
             line_color="#FF9800",
-            annotation_text=f"Gamma Flip {float(gamma_flip):.2f}",
-            annotation_position="right",
+        )
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=0.98,
+            y=float(gamma_flip),
+            text=f"Gamma Flip {float(gamma_flip):.2f}",
+            showarrow=False,
+            font=dict(color="#FF9800"),
+            bgcolor="rgba(0,0,0,0.35)",
+            xanchor="right",
+            yanchor="top",
+            xshift=-4,
         )
 
     if current_spot is not None:
@@ -754,8 +584,19 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level):
             line_width=2,
             line_dash="solid",
             line_color="#FFFFFF",
-            annotation_text=f"Spot {float(current_spot):.2f}",
-            annotation_position="left",
+        )
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=0.02,
+            y=float(current_spot),
+            text=f"Spot {float(current_spot):.2f}",
+            showarrow=False,
+            font=dict(color="#FFFFFF"),
+            bgcolor="rgba(0,0,0,0.45)",
+            xanchor="left",
+            yanchor="top",
+            xshift=4,
         )
 
     max_abs_x = max(curve["abs_weighted_gex"].max(), 1.0)
@@ -786,15 +627,88 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level):
             yanchor="middle",
         )
 
+    yaxis_cfg = {}
+    if forced_y_range is not None:
+        yaxis_cfg["range"] = forced_y_range
+
     fig.update_layout(
         title=f"{ticker} - GEX by Strike (Hybrid)",
         xaxis_title="Weighted GEX",
-        yaxis_title="Strike",
-        height=700,
-        margin=dict(l=30, r=30, t=60, b=30),
+        yaxis_title="Price / Strike",
+        height=650,
+        margin=dict(l=40, r=140, t=80, b=40),
+        showlegend=False,
+        yaxis=yaxis_cfg,
     )
 
+    fig.update_traces(cliponaxis=False)
     return fig, curve
+
+
+def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame) -> pd.DataFrame:
+    if curve_df.empty:
+        return curve_df
+
+    enriched_df = curve_df.copy()
+    enriched_df["oi_side"] = "OTHER"
+    enriched_df["agreement"] = "OTHER"
+    enriched_df["weighted_vex"] = None
+    enriched_df["vex_strength"] = None
+    enriched_df["market_behavior"] = None
+    enriched_df["best_trade_type"] = None
+    enriched_df["direction"] = None
+    enriched_df["trade_decision"] = None
+
+    if not levels_df.empty:
+        levels_map = levels_df.copy()
+        levels_map["level"] = levels_map["level"].astype(float)
+        levels_map = levels_map.groupby("level").first()
+
+        for idx, row in enriched_df.iterrows():
+            strike = float(row["strike"])
+            gamma_side = row["gamma_side"]
+
+            if strike in levels_map.index:
+                matched = levels_map.loc[strike]
+                oi_side = matched.get("side", "OTHER")
+                enriched_df.at[idx, "oi_side"] = oi_side
+
+                if oi_side == gamma_side and oi_side != "OTHER":
+                    enriched_df.at[idx, "agreement"] = "ALIGNED"
+                elif oi_side == "OTHER" and gamma_side != "OTHER":
+                    enriched_df.at[idx, "agreement"] = "GAMMA_ONLY"
+                elif oi_side != gamma_side and oi_side != "OTHER" and gamma_side != "OTHER":
+                    enriched_df.at[idx, "agreement"] = "FLIP"
+                else:
+                    enriched_df.at[idx, "agreement"] = "OTHER"
+
+                enriched_df.at[idx, "weighted_vex"] = matched.get("level_vex")
+                enriched_df.at[idx, "vex_strength"] = matched.get("vex_strength")
+                enriched_df.at[idx, "market_behavior"] = matched.get("market_behavior")
+                enriched_df.at[idx, "best_trade_type"] = matched.get("best_trade_type")
+                enriched_df.at[idx, "direction"] = matched.get("direction")
+
+                trade_type = matched.get("best_trade_type", "SKIP")
+                direction = matched.get("direction", "SKIP")
+                signal = matched.get("trade_now_signal", "PLAN")
+                grade = matched.get("grade", "SKIP")
+
+                if direction == "SKIP" or trade_type == "SKIP" or grade == "SKIP":
+                    decision = "SKIP"
+                elif signal == "TRADE NOW":
+                    decision = f"{trade_type} NOW"
+                elif signal == "WATCH":
+                    decision = f"WATCH {trade_type}"
+                else:
+                    decision = f"PLAN {trade_type}"
+
+                enriched_df.at[idx, "trade_decision"] = decision
+            else:
+                enriched_df.at[idx, "agreement"] = "GAMMA_ONLY" if gamma_side != "OTHER" else "OTHER"
+                enriched_df.at[idx, "trade_decision"] = "SKIP"
+
+    enriched_df = enriched_df.sort_values("abs_weighted_gex", ascending=False).reset_index(drop=True)
+    return enriched_df
 
 
 settings = load_settings()
@@ -858,7 +772,7 @@ status = load_json(REFRESH_STATUS_FILE, {})
 st.sidebar.write("### Last OI Refresh")
 st.sidebar.write(status.get("last_refresh_ny", "No refresh yet"))
 
-tab1, tab2, tab3, tab4 = st.tabs(["Dashboard", "Charts", "GEX Chart", "Hybrid View"])
+tab1, tab2, tab3 = st.tabs(["Dashboard", "Charts", "Hybrid View"])
 
 ticker_data = {}
 
@@ -972,64 +886,7 @@ with tab2:
         st.divider()
 
 with tab3:
-    st.write("GEX bar chart by strike. Green bars are positive GEX and red bars are negative GEX.")
-
-    for ticker in (tickers or DEFAULT_TICKERS):
-        st.header(f"{ticker} GEX Chart")
-        data = ticker_data.get(ticker, {})
-        if "error" in data:
-            st.error(f"{ticker}: {data['error']}")
-            st.divider()
-            continue
-
-        gamma = data["gamma"]
-        oi_key_level = data["oi_payload"].get("key_level")
-
-        fig, curve_df = build_gex_bar_chart(
-            ticker=ticker,
-            gamma=gamma,
-            oi_key_level=oi_key_level,
-            confluence_levels_df=data["confluence"]["levels"].copy(),
-        )
-
-        if fig is None:
-            st.warning(f"No GEX curve data available for {ticker}.")
-            st.divider()
-            continue
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("OI Key Level", oi_key_level if oi_key_level is not None else "N/A")
-        c2.metric("Gamma Key Level", gamma.get("key_level", "N/A"))
-        c3.metric("Gamma Flip", gamma.get("gamma_flip", "N/A"))
-
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
-            key=f"{ticker}_main_gex_chart",
-        )
-
-        st.write("### Strongest GEX Strikes")
-        gex_cols = [
-            "strike",
-            "oi_side",
-            "gamma_side",
-            "agreement",
-            "weighted_gex",
-            "abs_weighted_gex",
-            "weighted_vex",
-            "vex_strength",
-            "market_behavior",
-            "best_trade_type",
-            "direction",
-            "trade_decision",
-        ]
-        gex_cols = [c for c in gex_cols if c in curve_df.columns]
-        st.dataframe(curve_df[gex_cols].head(20), use_container_width=True, hide_index=True)
-
-        st.divider()
-
-with tab4:
-    st.write("Hybrid view combines the price chart with OI levels and a GEX-by-strike chart for each ticker.")
+    st.write("Hybrid view combines a 16-hour OI price chart with a GEX-by-strike chart. Both panels use the same y-axis range so levels line up visually.")
 
     for ticker in (tickers or DEFAULT_TICKERS):
         st.header(f"{ticker} Hybrid View")
@@ -1040,21 +897,29 @@ with tab4:
             continue
 
         try:
-            hist = cached_intraday_history(ticker)
+            hist_full = cached_intraday_history(ticker)
+            hist_16h = slice_history_last_hours(hist_full, 16)
             levels_df = data["confluence"]["levels"].copy()
             oi_key_level = data["oi_payload"].get("key_level")
             gamma = data["gamma"]
 
-            left_col, right_col = st.columns([1.25, 1])
+            aligned_y_range = get_aligned_y_range(
+                hist_df=hist_16h,
+                levels_df=levels_df,
+                current_spot=float(gamma["spot"]),
+            )
+
+            left_col, right_col = st.columns([1.2, 1])
 
             with left_col:
                 price_fig = build_chart_for_ticker(
                     ticker=ticker,
-                    hist_df=hist,
+                    hist_df=hist_16h,
                     levels_df=levels_df,
                     current_spot=float(gamma["spot"]),
+                    forced_y_range=aligned_y_range,
+                    title_suffix="Last 16h (Premarket + Market + Aftermarket + Overnight)",
                 )
-                
                 st.plotly_chart(
                     price_fig,
                     use_container_width=True,
@@ -1066,6 +931,7 @@ with tab4:
                     ticker=ticker,
                     gamma=gamma,
                     oi_key_level=oi_key_level,
+                    forced_y_range=aligned_y_range,
                 )
 
                 if hybrid_fig is not None:
@@ -1080,66 +946,7 @@ with tab4:
 
             st.write("### Strongest GEX Strikes")
             if not curve_df.empty:
-                enriched_df = curve_df.copy()
-
-                enriched_df["oi_side"] = "OTHER"
-                enriched_df["agreement"] = "OTHER"
-                enriched_df["weighted_vex"] = None
-                enriched_df["vex_strength"] = None
-                enriched_df["market_behavior"] = None
-                enriched_df["best_trade_type"] = None
-                enriched_df["direction"] = None
-                enriched_df["trade_decision"] = None
-
-                if not levels_df.empty:
-                    levels_map = levels_df.copy()
-                    levels_map["level"] = levels_map["level"].astype(float)
-                    levels_map = levels_map.groupby("level").first()
-
-                    for idx, row in enriched_df.iterrows():
-                        strike = float(row["strike"])
-                        gamma_side = row["gamma_side"]
-
-                        if strike in levels_map.index:
-                            matched = levels_map.loc[strike]
-                            oi_side = matched.get("side", "OTHER")
-                            enriched_df.at[idx, "oi_side"] = oi_side
-
-                            if oi_side == gamma_side and oi_side != "OTHER":
-                                enriched_df.at[idx, "agreement"] = "ALIGNED"
-                            elif oi_side == "OTHER" and gamma_side != "OTHER":
-                                enriched_df.at[idx, "agreement"] = "GAMMA_ONLY"
-                            elif oi_side != gamma_side and oi_side != "OTHER" and gamma_side != "OTHER":
-                                enriched_df.at[idx, "agreement"] = "FLIP"
-                            else:
-                                enriched_df.at[idx, "agreement"] = "OTHER"
-
-                            enriched_df.at[idx, "weighted_vex"] = matched.get("level_vex")
-                            enriched_df.at[idx, "vex_strength"] = matched.get("vex_strength")
-                            enriched_df.at[idx, "market_behavior"] = matched.get("market_behavior")
-                            enriched_df.at[idx, "best_trade_type"] = matched.get("best_trade_type")
-                            enriched_df.at[idx, "direction"] = matched.get("direction")
-
-                            trade_type = matched.get("best_trade_type", "SKIP")
-                            direction = matched.get("direction", "SKIP")
-                            signal = matched.get("trade_now_signal", "PLAN")
-                            grade = matched.get("grade", "SKIP")
-
-                            if direction == "SKIP" or trade_type == "SKIP" or grade == "SKIP":
-                                decision = "SKIP"
-                            elif signal == "TRADE NOW":
-                                decision = f"{trade_type} NOW"
-                            elif signal == "WATCH":
-                                decision = f"WATCH {trade_type}"
-                            else:
-                                decision = f"PLAN {trade_type}"
-
-                            enriched_df.at[idx, "trade_decision"] = decision
-                        else:
-                            enriched_df.at[idx, "agreement"] = "GAMMA_ONLY" if gamma_side != "OTHER" else "OTHER"
-                            enriched_df.at[idx, "trade_decision"] = "SKIP"
-
-                enriched_df = enriched_df.sort_values("abs_weighted_gex", ascending=False).reset_index(drop=True)
+                enriched_df = enrich_gex_table(curve_df, levels_df)
 
                 hybrid_cols = [
                     "strike",
