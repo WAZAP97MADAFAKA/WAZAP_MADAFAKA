@@ -927,7 +927,7 @@ with tab3:
                 current_spot=float(gamma["spot"]),
             )
 
-            left_col, right_col = st.columns([1.2, 1])
+            left_col, right_col = st.columns([1, 1])
 
             with left_col:
                 price_fig = build_chart_for_ticker(
