@@ -432,6 +432,30 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
         return None, pd.DataFrame()
 
     curve = curve.sort_values("strike").reset_index(drop=True)
+
+    # Build support/resistance map from gamma tables
+    support_strikes = set()
+    resistance_strikes = set()
+
+    top_supports_df = pd.DataFrame(gamma.get("top_supports", []))
+    top_resistances_df = pd.DataFrame(gamma.get("top_resistances", []))
+
+    if not top_supports_df.empty and "strike" in top_supports_df.columns:
+        support_strikes = set(top_supports_df["strike"].astype(float).tolist())
+
+    if not top_resistances_df.empty and "strike" in top_resistances_df.columns:
+        resistance_strikes = set(top_resistances_df["strike"].astype(float).tolist())
+
+    def classify_sr(strike):
+        strike = float(strike)
+        if strike in support_strikes:
+            return "SUPPORT"
+        if strike in resistance_strikes:
+            return "RESISTANCE"
+        return "OTHER"
+
+    curve["sr_type"] = curve["strike"].apply(classify_sr)
+
     colors = ["#00C853" if float(v) >= 0 else "#D50000" for v in curve["weighted_gex"]]
 
     fig = go.Figure()
@@ -530,6 +554,39 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
             xanchor="right",
         )
 
+    # Add R / S labels on top of bars
+    for _, row in curve.iterrows():
+        strike = float(row["strike"])
+        gex_val = float(row["weighted_gex"])
+        sr_type = row["sr_type"]
+
+        if sr_type == "SUPPORT":
+            bar_label = "S"
+            label_color = "#00E676"
+        elif sr_type == "RESISTANCE":
+            bar_label = "R"
+            label_color = "#FF5252"
+        else:
+            continue
+
+        if gex_val >= 0:
+            label_y = gex_val + (0.015 * y_range)
+            y_anchor = "bottom"
+        else:
+            label_y = gex_val - (0.015 * y_range)
+            y_anchor = "top"
+
+        fig.add_annotation(
+            x=strike,
+            y=label_y,
+            text=bar_label,
+            showarrow=False,
+            font=dict(color=label_color, size=12),
+            bgcolor="rgba(0,0,0,0.35)",
+            yanchor=y_anchor,
+            xanchor="center",
+        )
+
     fig.update_layout(
         title=f"{ticker} - GEX by Strike",
         xaxis_title="Strike",
@@ -541,8 +598,7 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
     curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
     curve = curve.sort_values("abs_weighted_gex", ascending=False).reset_index(drop=True)
 
-    return fig, curve[["strike", "weighted_gex", "abs_weighted_gex"]]
-
+    return fig, curve[["strike", "sr_type", "weighted_gex", "abs_weighted_gex"]]
 
 
 settings = load_settings()
@@ -709,7 +765,10 @@ with tab2:
             st.plotly_chart(fig, use_container_width=True)
 
             st.write("### Level Summary")
-            st.dataframe(levels_df[cols], use_container_width=True, hide_index=True)
+            gex_cols = ["strike", "sr_type", "weighted_gex", "abs_weighted_gex"]
+            gex_cols = [c for c in gex_cols if c in curve_df.columns]
+            st.dataframe(curve_df[gex_cols].head(20), use_container_width=True, hide_index=True)
+
 
         except Exception as e:
             st.error(f"{ticker} chart error: {e}")
