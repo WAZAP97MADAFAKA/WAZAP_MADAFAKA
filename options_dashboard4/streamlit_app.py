@@ -1220,6 +1220,8 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
         return curve_df
 
     enriched_df = curve_df.copy()
+
+    # Initialize columns
     enriched_df["oi_side"] = "OTHER"
     enriched_df["agreement"] = "OTHER"
     enriched_df["weighted_vex"] = None
@@ -1228,9 +1230,8 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
     enriched_df["best_trade_type"] = None
     enriched_df["direction"] = None
     enriched_df["trade_decision"] = None
-    enriched_df["spot"] = float(spot_price)
-    enriched_df["distance_to_spot"] = None
 
+    # Prepare levels lookup
     if not levels_df.empty:
         levels_map = levels_df.copy()
         levels_map["level"] = pd.to_numeric(levels_map["level"], errors="coerce")
@@ -1252,8 +1253,8 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
 
             enriched_df.at[idx, "oi_side"] = oi_side
             enriched_df.at[idx, "weighted_vex"] = weighted_vex
-            enriched_df.at[idx, "distance_to_spot"] = round(abs(strike - float(spot_price)), 2)
 
+            # Agreement logic
             if oi_side == gamma_side and oi_side != "OTHER":
                 agreement = "ALIGNED"
             elif oi_side == "OTHER" and gamma_side != "OTHER":
@@ -1265,20 +1266,107 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
 
             enriched_df.at[idx, "agreement"] = agreement
 
-            logic = classify_consistent_trade_logic(
-                oi_side=oi_side,
-                gamma_side=gamma_side,
-                agreement=agreement,
-                weighted_gex=row.get("weighted_gex", 0.0),
-                weighted_vex=weighted_vex,
-            )
+            # --- Trading logic ---
+            gex_val = 0.0 if pd.isna(row.get("weighted_gex")) else float(row.get("weighted_gex"))
+            vex_val = 0.0 if pd.isna(weighted_vex) else float(weighted_vex)
 
-            enriched_df.at[idx, "vex_strength"] = logic["vex_strength"]
-            enriched_df.at[idx, "market_behavior"] = logic["market_behavior"]
-            enriched_df.at[idx, "best_trade_type"] = logic["best_trade_type"]
-            enriched_df.at[idx, "direction"] = logic["direction"]
-            enriched_df.at[idx, "trade_decision"] = logic["trade_decision"]
-    # 🔥 Insert SPOT row
+            abs_vex = abs(vex_val)
+
+            # VEX strength
+            if abs_vex >= 25000:
+                vex_strength = "HIGH"
+            elif abs_vex >= 8000:
+                vex_strength = "MEDIUM"
+            elif abs_vex > 0:
+                vex_strength = "LOW"
+            else:
+                vex_strength = "LOW"
+
+            # Market behavior
+            if agreement == "ALIGNED":
+                if vex_strength == "LOW":
+                    market_behavior = "CLEAN"
+                elif vex_strength == "MEDIUM":
+                    market_behavior = "CONTROLLED"
+                else:
+                    market_behavior = "FAST"
+
+            elif agreement == "FLIP":
+                if vex_strength == "HIGH":
+                    market_behavior = "EXPLOSIVE"
+                elif vex_strength == "MEDIUM":
+                    market_behavior = "UNSTABLE"
+                else:
+                    market_behavior = "CHOP"
+
+            elif agreement == "GAMMA_ONLY":
+                if vex_strength == "HIGH":
+                    market_behavior = "FAST"
+                elif vex_strength == "MEDIUM":
+                    market_behavior = "CONTROLLED"
+                else:
+                    market_behavior = "CLEAN"
+            else:
+                market_behavior = "CHOP"
+
+            # Trade decision
+            best_trade_type = "SKIP"
+            direction = "SKIP"
+
+            if agreement == "ALIGNED":
+                if gamma_side == "SUPPORT":
+                    direction = "LONG"
+                    best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
+
+                elif gamma_side == "RESISTANCE":
+                    direction = "SHORT"
+                    best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
+
+            elif agreement == "FLIP":
+                if vex_strength == "HIGH":
+                    if gamma_side == "SUPPORT":
+                        direction = "LONG"
+                        best_trade_type = "BREAKOUT"
+                    elif gamma_side == "RESISTANCE":
+                        direction = "SHORT"
+                        best_trade_type = "BREAKDOWN"
+
+                elif vex_strength == "MEDIUM":
+                    if gamma_side == "SUPPORT":
+                        direction = "LONG"
+                        best_trade_type = "WATCH_BREAKOUT"
+                    elif gamma_side == "RESISTANCE":
+                        direction = "SHORT"
+                        best_trade_type = "WATCH_BREAKDOWN"
+
+                else:
+                    direction = "SKIP"
+                    best_trade_type = "SKIP"
+
+            elif agreement == "GAMMA_ONLY":
+                if gamma_side == "SUPPORT":
+                    direction = "LONG"
+                    best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
+
+                elif gamma_side == "RESISTANCE":
+                    direction = "SHORT"
+                    best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
+
+            # Final label
+            if best_trade_type == "SKIP" or direction == "SKIP":
+                trade_decision = "SKIP"
+            elif best_trade_type in ["WATCH_BREAKOUT", "WATCH_BREAKDOWN"]:
+                trade_decision = best_trade_type
+            else:
+                trade_decision = f"{best_trade_type} {direction}"
+
+            enriched_df.at[idx, "vex_strength"] = vex_strength
+            enriched_df.at[idx, "market_behavior"] = market_behavior
+            enriched_df.at[idx, "best_trade_type"] = best_trade_type
+            enriched_df.at[idx, "direction"] = direction
+            enriched_df.at[idx, "trade_decision"] = trade_decision
+
+    # 🔥 Add SPOT row
     spot_row = {
         "strike": float(spot_price),
         "oi_side": "SPOT",
@@ -1298,8 +1386,8 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price
         ignore_index=True
     )
 
-    # 🔥 Sort ONLY by strike so SPOT sits naturally in place
-    enriched_df = enriched_df.sort_values("strike").reset_index(drop=True)
+    # 🔥 Sort DESCENDING (top = higher strikes)
+    enriched_df = enriched_df.sort_values("strike", ascending=False).reset_index(drop=True)
 
     return enriched_df
 
