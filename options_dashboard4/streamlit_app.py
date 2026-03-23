@@ -982,7 +982,240 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
     return fig, curve
 
 
-def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame) -> pd.DataFrame:
+def classify_consistent_trade_logic(oi_side, gamma_side, agreement, weighted_gex, weighted_vex):
+    oi_side = str(oi_side or "OTHER")
+    gamma_side = str(gamma_side or "OTHER")
+    agreement = str(agreement or "OTHER")
+
+    gex_val = 0.0 if pd.isna(weighted_gex) else float(weighted_gex)
+    vex_val = 0.0 if pd.isna(weighted_vex) else float(weighted_vex)
+
+    abs_vex = abs(vex_val)
+
+    if abs_vex >= 25000:
+        vex_strength = "HIGH"
+    elif abs_vex >= 8000:
+        vex_strength = "MEDIUM"
+    elif abs_vex > 0:
+        vex_strength = "LOW"
+    else:
+        vex_strength = "LOW"
+
+    # -----------------------------
+    # 1) Market behavior
+    # -----------------------------
+    if agreement == "ALIGNED":
+        if vex_strength == "LOW":
+            market_behavior = "CLEAN"
+        elif vex_strength == "MEDIUM":
+            market_behavior = "CONTROLLED"
+        else:
+            market_behavior = "FAST"
+    elif agreement == "FLIP":
+        if vex_strength == "HIGH":
+            market_behavior = "EXPLOSIVE"
+        elif vex_strength == "MEDIUM":
+            market_behavior = "UNSTABLE"
+        else:
+            market_behavior = "CHOP"
+    elif agreement == "GAMMA_ONLY":
+        if vex_strength == "HIGH":
+            market_behavior = "FAST"
+        elif vex_strength == "MEDIUM":
+            market_behavior = "CONTROLLED"
+        else:
+            market_behavior = "CLEAN"
+    else:
+        market_behavior = "CHOP"
+
+    # -----------------------------
+    # 2) Trade type + direction
+    # -----------------------------
+    best_trade_type = "SKIP"
+    direction = "SKIP"
+
+    # ALIGNED = bounce/scalp in direction of side
+    if agreement == "ALIGNED":
+        if gamma_side == "SUPPORT":
+            direction = "LONG"
+            if vex_strength == "LOW":
+                best_trade_type = "BOUNCE"
+            elif vex_strength == "MEDIUM":
+                best_trade_type = "BOUNCE"
+            else:
+                best_trade_type = "SCALP"
+
+        elif gamma_side == "RESISTANCE":
+            direction = "SHORT"
+            if vex_strength == "LOW":
+                best_trade_type = "BOUNCE"
+            elif vex_strength == "MEDIUM":
+                best_trade_type = "BOUNCE"
+            else:
+                best_trade_type = "SCALP"
+
+    # FLIP = breakout/breakdown if VEX is high enough; otherwise skip
+    elif agreement == "FLIP":
+        if vex_strength == "HIGH":
+            if gamma_side == "SUPPORT":
+                direction = "LONG"
+                best_trade_type = "BREAKOUT"
+            elif gamma_side == "RESISTANCE":
+                direction = "SHORT"
+                best_trade_type = "BREAKDOWN"
+        elif vex_strength == "MEDIUM":
+            if gamma_side == "SUPPORT":
+                direction = "LONG"
+                best_trade_type = "WATCH_BREAKOUT"
+            elif gamma_side == "RESISTANCE":
+                direction = "SHORT"
+                best_trade_type = "WATCH_BREAKDOWN"
+        else:
+            direction = "SKIP"
+            best_trade_type = "SKIP"
+
+    # GAMMA_ONLY = follow gamma, but less confidence
+    elif agreement == "GAMMA_ONLY":
+        if gamma_side == "SUPPORT":
+            direction = "LONG"
+            best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
+        elif gamma_side == "RESISTANCE":
+            direction = "SHORT"
+            best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
+
+    # OTHER = skip
+    else:
+        direction = "SKIP"
+        best_trade_type = "SKIP"
+
+    # -----------------------------
+    # 3) Final trade decision text
+    # -----------------------------
+    if best_trade_type == "SKIP" or direction == "SKIP":
+        trade_decision = "SKIP"
+    elif best_trade_type in ["WATCH_BREAKOUT", "WATCH_BREAKDOWN"]:
+        trade_decision = best_trade_type
+    else:
+        trade_decision = f"{best_trade_type} {direction}"
+
+    return {
+        "vex_strength": vex_strength,
+        "market_behavior": market_behavior,
+        "best_trade_type": best_trade_type,
+        "direction": direction,
+        "trade_decision": trade_decision,
+    }
+
+
+def classify_consistent_trade_logic(oi_side, gamma_side, agreement, weighted_gex, weighted_vex):
+    oi_side = str(oi_side or "OTHER")
+    gamma_side = str(gamma_side or "OTHER")
+    agreement = str(agreement or "OTHER")
+
+    gex_val = 0.0 if pd.isna(weighted_gex) else float(weighted_gex)
+    vex_val = 0.0 if pd.isna(weighted_vex) else float(weighted_vex)
+
+    abs_vex = abs(vex_val)
+
+    if abs_vex >= 25000:
+        vex_strength = "HIGH"
+    elif abs_vex >= 8000:
+        vex_strength = "MEDIUM"
+    elif abs_vex > 0:
+        vex_strength = "LOW"
+    else:
+        vex_strength = "LOW"
+
+    if agreement == "ALIGNED":
+        if vex_strength == "LOW":
+            market_behavior = "CLEAN"
+        elif vex_strength == "MEDIUM":
+            market_behavior = "CONTROLLED"
+        else:
+            market_behavior = "FAST"
+    elif agreement == "FLIP":
+        if vex_strength == "HIGH":
+            market_behavior = "EXPLOSIVE"
+        elif vex_strength == "MEDIUM":
+            market_behavior = "UNSTABLE"
+        else:
+            market_behavior = "CHOP"
+    elif agreement == "GAMMA_ONLY":
+        if vex_strength == "HIGH":
+            market_behavior = "FAST"
+        elif vex_strength == "MEDIUM":
+            market_behavior = "CONTROLLED"
+        else:
+            market_behavior = "CLEAN"
+    else:
+        market_behavior = "CHOP"
+
+    best_trade_type = "SKIP"
+    direction = "SKIP"
+
+    if agreement == "ALIGNED":
+        if gamma_side == "SUPPORT":
+            direction = "LONG"
+            if vex_strength == "HIGH":
+                best_trade_type = "SCALP"
+            else:
+                best_trade_type = "BOUNCE"
+
+        elif gamma_side == "RESISTANCE":
+            direction = "SHORT"
+            if vex_strength == "HIGH":
+                best_trade_type = "SCALP"
+            else:
+                best_trade_type = "BOUNCE"
+
+    elif agreement == "FLIP":
+        if vex_strength == "HIGH":
+            if gamma_side == "SUPPORT":
+                direction = "LONG"
+                best_trade_type = "BREAKOUT"
+            elif gamma_side == "RESISTANCE":
+                direction = "SHORT"
+                best_trade_type = "BREAKDOWN"
+        elif vex_strength == "MEDIUM":
+            if gamma_side == "SUPPORT":
+                direction = "LONG"
+                best_trade_type = "WATCH_BREAKOUT"
+            elif gamma_side == "RESISTANCE":
+                direction = "SHORT"
+                best_trade_type = "WATCH_BREAKDOWN"
+        else:
+            direction = "SKIP"
+            best_trade_type = "SKIP"
+
+    elif agreement == "GAMMA_ONLY":
+        if gamma_side == "SUPPORT":
+            direction = "LONG"
+            best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
+        elif gamma_side == "RESISTANCE":
+            direction = "SHORT"
+            best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
+
+    else:
+        direction = "SKIP"
+        best_trade_type = "SKIP"
+
+    if best_trade_type == "SKIP" or direction == "SKIP":
+        trade_decision = "SKIP"
+    elif best_trade_type in ["WATCH_BREAKOUT", "WATCH_BREAKDOWN"]:
+        trade_decision = best_trade_type
+    else:
+        trade_decision = f"{best_trade_type} {direction}"
+
+    return {
+        "vex_strength": vex_strength,
+        "market_behavior": market_behavior,
+        "best_trade_type": best_trade_type,
+        "direction": direction,
+        "trade_decision": trade_decision,
+    }
+
+
+def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame, spot_price: float) -> pd.DataFrame:
     if curve_df.empty:
         return curve_df
 
@@ -995,57 +1228,81 @@ def enrich_gex_table(curve_df: pd.DataFrame, levels_df: pd.DataFrame) -> pd.Data
     enriched_df["best_trade_type"] = None
     enriched_df["direction"] = None
     enriched_df["trade_decision"] = None
+    enriched_df["spot"] = float(spot_price)
+    enriched_df["distance_to_spot"] = None
 
     if not levels_df.empty:
         levels_map = levels_df.copy()
+        levels_map["level"] = pd.to_numeric(levels_map["level"], errors="coerce")
+        levels_map = levels_map.dropna(subset=["level"])
         levels_map["level"] = levels_map["level"].astype(float)
         levels_map = levels_map.groupby("level").first()
 
         for idx, row in enriched_df.iterrows():
             strike = float(row["strike"])
-            gamma_side = row["gamma_side"]
+            gamma_side = str(row.get("gamma_side", "OTHER"))
+
+            oi_side = "OTHER"
+            weighted_vex = 0.0
 
             if strike in levels_map.index:
                 matched = levels_map.loc[strike]
                 oi_side = matched.get("side", "OTHER")
-                enriched_df.at[idx, "oi_side"] = oi_side
+                weighted_vex = matched.get("level_vex", 0.0)
 
-                if oi_side == gamma_side and oi_side != "OTHER":
-                    enriched_df.at[idx, "agreement"] = "ALIGNED"
-                elif oi_side == "OTHER" and gamma_side != "OTHER":
-                    enriched_df.at[idx, "agreement"] = "GAMMA_ONLY"
-                elif oi_side != gamma_side and oi_side != "OTHER" and gamma_side != "OTHER":
-                    enriched_df.at[idx, "agreement"] = "FLIP"
-                else:
-                    enriched_df.at[idx, "agreement"] = "OTHER"
+            enriched_df.at[idx, "oi_side"] = oi_side
+            enriched_df.at[idx, "weighted_vex"] = weighted_vex
+            enriched_df.at[idx, "distance_to_spot"] = round(abs(strike - float(spot_price)), 2)
 
-                enriched_df.at[idx, "weighted_vex"] = matched.get("level_vex")
-                enriched_df.at[idx, "vex_strength"] = matched.get("vex_strength")
-                enriched_df.at[idx, "market_behavior"] = matched.get("market_behavior")
-                enriched_df.at[idx, "best_trade_type"] = matched.get("best_trade_type")
-                enriched_df.at[idx, "direction"] = matched.get("direction")
-
-                trade_type = matched.get("best_trade_type", "SKIP")
-                direction = matched.get("direction", "SKIP")
-                signal = matched.get("trade_now_signal", "PLAN")
-                grade = matched.get("grade", "SKIP")
-
-                if direction == "SKIP" or trade_type == "SKIP" or grade == "SKIP":
-                    decision = "SKIP"
-                elif signal == "TRADE NOW":
-                    decision = f"{trade_type} NOW"
-                elif signal == "WATCH":
-                    decision = f"WATCH {trade_type}"
-                else:
-                    decision = f"PLAN {trade_type}"
-
-                enriched_df.at[idx, "trade_decision"] = decision
+            if oi_side == gamma_side and oi_side != "OTHER":
+                agreement = "ALIGNED"
+            elif oi_side == "OTHER" and gamma_side != "OTHER":
+                agreement = "GAMMA_ONLY"
+            elif oi_side != gamma_side and oi_side != "OTHER" and gamma_side != "OTHER":
+                agreement = "FLIP"
             else:
-                enriched_df.at[idx, "agreement"] = "GAMMA_ONLY" if gamma_side != "OTHER" else "OTHER"
-                enriched_df.at[idx, "trade_decision"] = "SKIP"
+                agreement = "OTHER"
 
-    enriched_df = enriched_df.sort_values("abs_weighted_gex", ascending=False).reset_index(drop=True)
+            enriched_df.at[idx, "agreement"] = agreement
+
+            logic = classify_consistent_trade_logic(
+                oi_side=oi_side,
+                gamma_side=gamma_side,
+                agreement=agreement,
+                weighted_gex=row.get("weighted_gex", 0.0),
+                weighted_vex=weighted_vex,
+            )
+
+            enriched_df.at[idx, "vex_strength"] = logic["vex_strength"]
+            enriched_df.at[idx, "market_behavior"] = logic["market_behavior"]
+            enriched_df.at[idx, "best_trade_type"] = logic["best_trade_type"]
+            enriched_df.at[idx, "direction"] = logic["direction"]
+            enriched_df.at[idx, "trade_decision"] = logic["trade_decision"]
+    # 🔥 Insert SPOT row
+    spot_row = {
+        "strike": float(spot_price),
+        "oi_side": "SPOT",
+        "gamma_side": "SPOT",
+        "agreement": "REFERENCE",
+        "weighted_gex": 0,
+        "weighted_vex": 0,
+        "vex_strength": "-",
+        "market_behavior": "-",
+        "best_trade_type": "-",
+        "direction": "-",
+        "trade_decision": "WATCH",
+    }
+
+    enriched_df = pd.concat(
+        [enriched_df, pd.DataFrame([spot_row])],
+        ignore_index=True
+    )
+
+    # 🔥 Sort ONLY by strike so SPOT sits naturally in place
+    enriched_df = enriched_df.sort_values("strike").reset_index(drop=True)
+
     return enriched_df
+
 
 
 settings = load_settings()
@@ -1263,7 +1520,11 @@ with tab3:
 
             st.write("### Strongest GEX Strikes")
             if not curve_df.empty:
-                enriched_df = enrich_gex_table(curve_df, levels_df)
+                enriched_df = enrich_gex_table(
+                    curve_df,
+                    levels_df,
+                    spot_price=float(gamma["spot"]),
+                )
 
                 hybrid_cols = [
                     "strike",
@@ -1271,7 +1532,6 @@ with tab3:
                     "gamma_side",
                     "agreement",
                     "weighted_gex",
-                    "abs_weighted_gex",
                     "weighted_vex",
                     "vex_strength",
                     "market_behavior",
