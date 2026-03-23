@@ -958,7 +958,7 @@ with tab2:
                 current_spot=float(data["gamma"]["spot"]),
             )
             st.plotly_chart(
-                fig, 
+                fig,
                 use_container_width=True,
                 key=f"{ticker}_main_price_chart",
             )
@@ -1003,7 +1003,7 @@ with tab3:
         c3.metric("Gamma Flip", gamma.get("gamma_flip", "N/A"))
 
         st.plotly_chart(
-            fig, 
+            fig,
             use_container_width=True,
             key=f"{ticker}_main_gex_chart",
         )
@@ -1055,7 +1055,7 @@ with tab4:
                     current_spot=float(gamma["spot"]),
                 )
                 st.plotly_chart(
-                    price_fig, 
+                    price_fig,
                     use_container_width=True,
                     key=f"{ticker}_hybrid_price_chart",
                 )
@@ -1069,7 +1069,7 @@ with tab4:
 
                 if hybrid_fig is not None:
                     st.plotly_chart(
-                        hybrid_fig, 
+                        hybrid_fig,
                         use_container_width=True,
                         key=f"{ticker}_hybrid_gex_chart",
                     )
