@@ -5,6 +5,7 @@ from datetime import timedelta
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
 
 from options_config import (
@@ -389,6 +390,324 @@ def add_session_backgrounds(fig, hist_df):
 
     return fig
 
+def build_hybrid_subplot_figure(
+    ticker,
+    hist_df,
+    levels_df,
+    gamma,
+    oi_key_level,
+    forced_y_range=None,
+):
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        shared_yaxes=True,
+        horizontal_spacing=0.03,
+        column_widths=[0.62, 0.38],
+    )
+
+    # -----------------------------
+    # Left side: price + OI levels
+    # -----------------------------
+    fig.add_trace(
+        go.Scatter(
+            x=hist_df["datetime"],
+            y=hist_df["close"],
+            mode="lines",
+            name=f"{ticker} Price",
+            line=dict(width=2),
+        ),
+        row=1,
+        col=1,
+    )
+
+    # Session backgrounds on left subplot only
+    if not hist_df.empty:
+        x_min = hist_df["datetime"].min()
+        x_max = hist_df["datetime"].max()
+        start_day = x_min.normalize()
+        end_day = x_max.normalize()
+
+        current_day = start_day
+        while current_day <= end_day:
+            if current_day.weekday() < 5:
+                overnight_start = current_day
+                overnight_end = current_day + timedelta(hours=4)
+
+                premarket_start = current_day + timedelta(hours=4)
+                premarket_end = current_day + timedelta(hours=9, minutes=30)
+
+                aftermarket_start = current_day + timedelta(hours=16)
+                aftermarket_end = current_day + timedelta(hours=20)
+
+                overnight2_start = current_day + timedelta(hours=20)
+                overnight2_end = current_day + timedelta(days=1)
+
+                windows = [
+                    (overnight_start, overnight_end, "rgba(80, 80, 120, 0.12)"),
+                    (premarket_start, premarket_end, "rgba(70, 120, 180, 0.12)"),
+                    (aftermarket_start, aftermarket_end, "rgba(150, 90, 170, 0.12)"),
+                    (overnight2_start, overnight2_end, "rgba(80, 80, 120, 0.12)"),
+                ]
+
+                for x0, x1, color in windows:
+                    left = max(x0, x_min)
+                    right = min(x1, x_max)
+                    if left < right:
+                        fig.add_vrect(
+                            x0=left,
+                            x1=right,
+                            fillcolor=color,
+                            opacity=1,
+                            line_width=0,
+                            layer="below",
+                            row=1,
+                            col=1,
+                        )
+
+            current_day += timedelta(days=1)
+
+    for _, row in levels_df.iterrows():
+        level = float(row["level"])
+        side = str(row.get("side", ""))
+        line_color = "#00C853" if side == "SUPPORT" else "#D50000"
+        dash = "solid" if side == "SUPPORT" else "dot"
+
+        fig.add_hline(
+            y=level,
+            line_color=line_color,
+            line_width=1.4,
+            line_dash=dash,
+            row=1,
+            col=1,
+        )
+
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=0.60,
+            y=level,
+            text=f"{level:.2f}",
+            showarrow=False,
+            font=dict(size=10, color=line_color),
+            bgcolor="rgba(0,0,0,0.25)",
+            xanchor="left",
+            yanchor="middle",
+        )
+
+    current_spot = float(gamma["spot"])
+    fig.add_hline(
+        y=current_spot,
+        line_color="#64B5F6",
+        line_width=1.4,
+        line_dash="dash",
+        row=1,
+        col=1,
+    )
+
+    fig.add_annotation(
+        xref="paper",
+        yref="y",
+        x=0.01,
+        y=current_spot,
+        text=f"Spot {current_spot:.2f}",
+        showarrow=False,
+        font=dict(size=11, color="#64B5F6"),
+        bgcolor="rgba(0,0,0,0.35)",
+        xanchor="left",
+        yanchor="middle",
+    )
+
+    # -----------------------------
+    # Right side: GEX bars
+    # -----------------------------
+    curve = pd.DataFrame(gamma.get("gex_curve", []))
+    if curve.empty:
+        curve = pd.DataFrame(gamma.get("gex_curve_wide", []))
+
+    if curve.empty:
+        return fig, pd.DataFrame()
+
+    curve = curve.sort_values("strike").reset_index(drop=True)
+
+    support_strikes = set()
+    resistance_strikes = set()
+
+    top_supports_df = pd.DataFrame(gamma.get("top_supports", []))
+    top_resistances_df = pd.DataFrame(gamma.get("top_resistances", []))
+
+    if not top_supports_df.empty and "strike" in top_supports_df.columns:
+        support_strikes = set(top_supports_df["strike"].astype(float).tolist())
+
+    if not top_resistances_df.empty and "strike" in top_resistances_df.columns:
+        resistance_strikes = set(top_resistances_df["strike"].astype(float).tolist())
+
+    def classify_gamma_side(strike):
+        strike = float(strike)
+        if strike in support_strikes:
+            return "SUPPORT"
+        if strike in resistance_strikes:
+            return "RESISTANCE"
+        return "OTHER"
+
+    curve["gamma_side"] = curve["strike"].apply(classify_gamma_side)
+    curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
+
+    colors = ["#00C853" if float(v) >= 0 else "#D50000" for v in curve["weighted_gex"]]
+
+    fig.add_trace(
+        go.Bar(
+            x=curve["weighted_gex"],
+            y=curve["strike"],
+            orientation="h",
+            marker_color=colors,
+            name="Weighted GEX",
+            showlegend=False,
+        ),
+        row=1,
+        col=2,
+    )
+
+    gamma_key_level = gamma.get("key_level")
+    gamma_flip = gamma.get("gamma_flip")
+
+    if gamma_key_level is not None:
+        fig.add_hline(
+            y=float(gamma_key_level),
+            line_width=2,
+            line_dash="dash",
+            line_color="#FFD54F",
+            row=1,
+            col=2,
+        )
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=0.985,
+            y=float(gamma_key_level),
+            text=f"Gamma Key {float(gamma_key_level):.2f}",
+            showarrow=False,
+            font=dict(color="#FFD54F", size=11),
+            bgcolor="rgba(0,0,0,0.35)",
+            xanchor="right",
+            yanchor="bottom",
+        )
+
+    if oi_key_level is not None:
+        fig.add_hline(
+            y=float(oi_key_level),
+            line_width=2,
+            line_dash="dot",
+            line_color="#64B5F6",
+            row=1,
+            col=2,
+        )
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=0.76,
+            y=float(oi_key_level),
+            text=f"OI Key {float(oi_key_level):.2f}",
+            showarrow=False,
+            font=dict(color="#64B5F6", size=11),
+            bgcolor="rgba(0,0,0,0.35)",
+            xanchor="left",
+            yanchor="bottom",
+        )
+
+    if gamma_flip is not None:
+        fig.add_hline(
+            y=float(gamma_flip),
+            line_width=2,
+            line_dash="longdash",
+            line_color="#FF9800",
+            row=1,
+            col=2,
+        )
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=0.985,
+            y=float(gamma_flip),
+            text=f"Gamma Flip {float(gamma_flip):.2f}",
+            showarrow=False,
+            font=dict(color="#FF9800", size=11),
+            bgcolor="rgba(0,0,0,0.35)",
+            xanchor="right",
+            yanchor="top",
+        )
+
+    max_abs_x = max(curve["abs_weighted_gex"].max(), 1.0)
+
+    for _, row in curve.iterrows():
+        strike = float(row["strike"])
+        gex_val = float(row["weighted_gex"])
+        gamma_side = row["gamma_side"]
+
+        if gamma_side == "SUPPORT":
+            txt = "S"
+            color = "#00E676"
+        elif gamma_side == "RESISTANCE":
+            txt = "R"
+            color = "#FF5252"
+        else:
+            continue
+
+        label_x = gex_val + (0.03 * max_abs_x if gex_val >= 0 else -0.03 * max_abs_x)
+        fig.add_annotation(
+            x=label_x,
+            y=strike,
+            xref="x2",
+            yref="y",
+            text=txt,
+            showarrow=False,
+            font=dict(color=color, size=11),
+            bgcolor="rgba(0,0,0,0.25)",
+            xanchor="center",
+            yanchor="middle",
+        )
+
+    shared_yaxis = get_shared_yaxis_config(forced_y_range)
+
+    fig.update_yaxes(shared_yaxis, row=1, col=1)
+    fig.update_yaxes(shared_yaxis, row=1, col=2)
+
+    fig.update_xaxes(
+        title_text="Time",
+        rangebreaks=[dict(bounds=["sat", "mon"])],
+        rangeslider=dict(visible=False),
+        row=1,
+        col=1,
+    )
+    fig.update_xaxes(
+        title_text="Weighted GEX",
+        row=1,
+        col=2,
+    )
+
+    fig.update_layout(
+        title=f"{ticker} - Hybrid View",
+        template="plotly_dark",
+        height=700,
+        margin=dict(l=60, r=100, t=70, b=50),
+        showlegend=False,
+    )
+
+    return fig, curve
+
+
+def get_shared_yaxis_config(forced_y_range):
+    if forced_y_range is None:
+        return {}
+
+    y_min, y_max = forced_y_range
+    return {
+        "range": forced_y_range,
+        "tickmode": "linear",
+        "tick0": int(y_min // 5) * 5,
+        "dtick": 5,
+        "fixedrange": True,
+    }
 
 def get_shared_yaxis_config(forced_y_range):
     if forced_y_range is None:
@@ -904,7 +1223,7 @@ with tab2:
         st.divider()
 
 with tab3:
-    st.write("Hybrid view combines a 16-hour OI price chart with a GEX-by-strike chart. Both panels use the same y-axis range so levels line up visually.")
+    st.write("Hybrid view combines a 16-hour OI price chart with a GEX-by-strike chart inside one shared subplot figure, so levels line up exactly.")
 
     for ticker in (tickers or DEFAULT_TICKERS):
         st.header(f"{ticker} Hybrid View")
@@ -927,40 +1246,20 @@ with tab3:
                 current_spot=float(gamma["spot"]),
             )
 
-            left_col, right_col = st.columns([1, 1])
+            hybrid_fig, curve_df = build_hybrid_subplot_figure(
+                ticker=ticker,
+                hist_df=hist_16h,
+                levels_df=levels_df,
+                gamma=gamma,
+                oi_key_level=oi_key_level,
+                forced_y_range=aligned_y_range,
+            )
 
-            with left_col:
-                price_fig = build_chart_for_ticker(
-                    ticker=ticker,
-                    hist_df=hist_16h,
-                    levels_df=levels_df,
-                    current_spot=float(gamma["spot"]),
-                    forced_y_range=aligned_y_range,
-                    title_suffix="Last 16h (Premarket + Market + Aftermarket + Overnight)",
-                )
-                st.plotly_chart(
-                    price_fig,
-                    use_container_width=True,
-                    key=f"{ticker}_hybrid_price_chart",
-                )
-
-            with right_col:
-                hybrid_fig, curve_df = build_hybrid_gex_chart(
-                    ticker=ticker,
-                    gamma=gamma,
-                    oi_key_level=oi_key_level,
-                    forced_y_range=aligned_y_range,
-                )
-
-                if hybrid_fig is not None:
-                    st.plotly_chart(
-                        hybrid_fig,
-                        use_container_width=True,
-                        key=f"{ticker}_hybrid_gex_chart",
-                    )
-                else:
-                    st.warning(f"No hybrid GEX data available for {ticker}.")
-                    curve_df = pd.DataFrame()
+            st.plotly_chart(
+                hybrid_fig,
+                use_container_width=True,
+                key=f"{ticker}_hybrid_subplot_chart",
+            )
 
             st.write("### Strongest GEX Strikes")
             if not curve_df.empty:
