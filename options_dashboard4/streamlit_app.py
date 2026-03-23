@@ -252,7 +252,13 @@ def render_confluence_section(confluence):
         "market_behavior",
         "best_trade_type",
         "direction",
+        "static_score",
+        "static_grade",
+        "dynamic_score",
+        "grade",
+        "confidence",
         "hold_break_bias",
+        "trade_now_signal",
         "bounce_probability",
         "breakout_probability",
         "entry",
@@ -262,12 +268,6 @@ def render_confluence_section(confluence):
     ]
     cols = [c for c in cols if c in levels.columns]
 
-        #"static_score",
-        #"static_grade",
-        #"dynamic_score",
-        #"grade",
-        #"confidence",
-        #"trade_now_signal",
     st.dataframe(levels[cols], use_container_width=True, hide_index=True)
 
     if "trade_now_signal" in levels.columns:
@@ -411,6 +411,64 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
     return fig
 
 
+def build_gex_bar_chart(ticker, gamma, oi_key_level):
+    curve = pd.DataFrame(gamma.get("gex_curve", []))
+    if curve.empty:
+        curve = pd.DataFrame(gamma.get("gex_curve_wide", []))
+
+    if curve.empty:
+        return None, pd.DataFrame()
+
+    curve = curve.sort_values("strike").reset_index(drop=True)
+
+    colors = ["#00C853" if float(v) >= 0 else "#D50000" for v in curve["weighted_gex"]]
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Bar(
+            x=curve["strike"],
+            y=curve["weighted_gex"],
+            marker_color=colors,
+            name="Weighted GEX",
+        )
+    )
+
+    gamma_key_level = gamma.get("key_level")
+    if gamma_key_level is not None:
+        fig.add_vline(
+            x=float(gamma_key_level),
+            line_width=2,
+            line_dash="dash",
+            line_color="#FFD54F",
+            annotation_text=f"Gamma Key {float(gamma_key_level):.2f}",
+            annotation_position="top left",
+        )
+
+    if oi_key_level is not None:
+        fig.add_vline(
+            x=float(oi_key_level),
+            line_width=2,
+            line_dash="dot",
+            line_color="#64B5F6",
+            annotation_text=f"OI Key {float(oi_key_level):.2f}",
+            annotation_position="top right",
+        )
+
+    fig.update_layout(
+        title=f"{ticker} - GEX by Strike",
+        xaxis_title="Strike",
+        yaxis_title="Weighted GEX",
+        height=600,
+        margin=dict(l=30, r=30, t=50, b=30),
+    )
+
+    curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
+    curve = curve.sort_values("abs_weighted_gex", ascending=False).reset_index(drop=True)
+
+    return fig, curve[["strike", "weighted_gex", "abs_weighted_gex"]]
+
+
 settings = load_settings()
 
 st.sidebar.header("Settings")
@@ -472,7 +530,7 @@ status = load_json(REFRESH_STATUS_FILE, {})
 st.sidebar.write("### Last OI Refresh")
 st.sidebar.write(status.get("last_refresh_ny", "No refresh yet"))
 
-tab1, tab2 = st.tabs(["Dashboard", "Charts"])
+tab1, tab2, tab3 = st.tabs(["Dashboard", "Charts", "GEX Chart"])
 
 ticker_data = {}
 
@@ -552,6 +610,11 @@ with tab2:
                 "market_behavior",
                 "best_trade_type",
                 "direction",
+                "static_score",
+                "static_grade",
+                "dynamic_score",
+                "grade",
+                "trade_now_signal",
                 "bounce_probability",
                 "breakout_probability",
                 "entry",
@@ -559,12 +622,6 @@ with tab2:
                 "target",
             ]
             cols = [c for c in cols if c in levels_df.columns]
-                #"static_score",
-                #"static_grade",
-                #"dynamic_score",
-                #"grade",
-                #"trade_now_signal",
-
 
             fig = build_chart_for_ticker(
                 ticker=ticker,
@@ -579,5 +636,42 @@ with tab2:
 
         except Exception as e:
             st.error(f"{ticker} chart error: {e}")
+
+        st.divider()
+
+with tab3:
+    st.write("GEX bar chart by strike. Green bars are positive GEX and red bars are negative GEX.")
+
+    for ticker in (tickers or DEFAULT_TICKERS):
+        st.header(f"{ticker} GEX Chart")
+        data = ticker_data.get(ticker, {})
+        if "error" in data:
+            st.error(f"{ticker}: {data['error']}")
+            st.divider()
+            continue
+
+        gamma = data["gamma"]
+        oi_key_level = data["oi_payload"].get("key_level")
+
+        fig, curve_df = build_gex_bar_chart(
+            ticker=ticker,
+            gamma=gamma,
+            oi_key_level=oi_key_level,
+        )
+
+        if fig is None:
+            st.warning(f"No GEX curve data available for {ticker}.")
+            st.divider()
+            continue
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("OI Key Level", oi_key_level if oi_key_level is not None else "N/A")
+        c2.metric("Gamma Key Level", gamma.get("key_level", "N/A"))
+        c3.metric("Gamma Flip", gamma.get("gamma_flip", "N/A"))
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.write("### Strongest GEX Strikes")
+        st.dataframe(curve_df.head(20), use_container_width=True, hide_index=True)
 
         st.divider()

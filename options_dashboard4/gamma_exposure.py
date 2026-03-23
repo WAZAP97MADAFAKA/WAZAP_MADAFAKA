@@ -35,11 +35,7 @@ def estimate_gamma_flip(grouped_df: pd.DataFrame):
 
 def infer_gamma_regime_from_net_gex(spot: float, gamma_flip, total_net_gex: float):
     if gamma_flip is not None:
-        return (
-            "ABOVE_FLIP_RANGE_BIAS"
-            if spot > gamma_flip
-            else "BELOW_FLIP_TREND_BIAS"
-        )
+        return "ABOVE_FLIP_RANGE_BIAS" if spot > gamma_flip else "BELOW_FLIP_TREND_BIAS"
 
     if total_net_gex > 0:
         return "NO_LOCAL_FLIP_LONG_GAMMA_BIAS"
@@ -57,7 +53,7 @@ def get_gamma_levels(
     if weights is None:
         weights = EXPIRATION_WEIGHTS
 
-    # Local window for levels
+    # local window for visible trading levels
     spot, expirations, combined_calls, combined_puts = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
@@ -92,8 +88,8 @@ def get_gamma_levels(
         .reset_index(drop=True)
     )
 
-    # Wider window only for flip detection
-    wide_spot, wide_expirations, wide_calls, wide_puts = get_weighted_option_data_polygon(
+    # wider scan for flip detection + full GEX bar chart
+    _, _, wide_calls, wide_puts = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
         fixed_spot=spot,
@@ -107,6 +103,7 @@ def get_gamma_levels(
         ],
         ignore_index=True,
     )
+
     combined_all = (
         combined_all.groupby("strike", as_index=False)
         .agg(weighted_gex=("weighted_gex", "sum"))
@@ -128,6 +125,11 @@ def get_gamma_levels(
     search_min, search_max = get_local_range(spot, max_distance)
 
     regime = infer_gamma_regime_from_net_gex(spot, gamma_flip, total_net_gex)
+
+    # local GEX curve for easier plotting around price
+    local_gex_curve = combined_all[
+        (combined_all["strike"] >= search_min) & (combined_all["strike"] <= search_max)
+    ].copy()
 
     return {
         "model": "GAMMA",
@@ -153,4 +155,6 @@ def get_gamma_levels(
         "top_vex_supports": top_vex_supports[
             ["strike", "weighted_vex", "total_vex", "weighted_gex", "total_gex"]
         ],
+        "gex_curve": local_gex_curve.to_dict(orient="records"),
+        "gex_curve_wide": combined_all.to_dict(orient="records"),
     }
