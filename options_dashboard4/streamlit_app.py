@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -239,30 +240,46 @@ def render_confluence_section(confluence):
         st.warning("No confluence levels found.")
         return
 
+    st.write("### Decision Table")
+
     cols = [
         "side",
         "level",
         "level_gex",
         "level_vex",
+        "vex_strength",
         "gamma_strength",
+        "market_behavior",
+        "best_trade_type",
+        "direction",
         "static_score",
         "static_grade",
         "dynamic_score",
         "grade",
         "confidence",
         "hold_break_bias",
-        "action",
+        "trade_now_signal",
+        "bounce_probability",
+        "breakout_probability",
+        "entry",
+        "stop",
+        "target",
         "distance_to_spot",
-        "distance_to_key",
     ]
     cols = [c for c in cols if c in levels.columns]
 
     st.dataframe(levels[cols], use_container_width=True, hide_index=True)
 
-    aplus = levels[levels["grade"] == "A+"]
-    if not aplus.empty:
-        st.success("A+ setups detected")
-        st.dataframe(aplus[cols], use_container_width=True, hide_index=True)
+    if "trade_now_signal" in levels.columns:
+        active = levels[levels["trade_now_signal"] == "TRADE NOW"]
+        if not active.empty:
+            st.success("TRADE NOW setups detected")
+            st.dataframe(active[cols], use_container_width=True, hide_index=True)
+
+        watch = levels[levels["trade_now_signal"] == "WATCH"]
+        if not watch.empty:
+            st.info("WATCH setups detected")
+            st.dataframe(watch[cols], use_container_width=True, hide_index=True)
 
     st.write("### When to Skip a Trade")
     for rule in confluence.get("skip_rules", []):
@@ -281,6 +298,55 @@ def get_chart_outcome_label(row):
     return "NEUTRAL"
 
 
+def add_session_backgrounds(fig, hist_df):
+    if hist_df.empty:
+        return fig
+
+    x_min = hist_df["datetime"].min()
+    x_max = hist_df["datetime"].max()
+
+    start_day = x_min.normalize()
+    end_day = x_max.normalize()
+
+    current_day = start_day
+    while current_day <= end_day:
+        overnight_start = current_day
+        overnight_end = current_day + timedelta(hours=4)
+
+        premarket_start = current_day + timedelta(hours=4)
+        premarket_end = current_day + timedelta(hours=9, minutes=30)
+
+        aftermarket_start = current_day + timedelta(hours=16)
+        aftermarket_end = current_day + timedelta(hours=20)
+
+        overnight2_start = current_day + timedelta(hours=20)
+        overnight2_end = current_day + timedelta(days=1)
+
+        windows = [
+            (overnight_start, overnight_end, "rgba(80, 80, 120, 0.12)"),
+            (premarket_start, premarket_end, "rgba(70, 120, 180, 0.12)"),
+            (aftermarket_start, aftermarket_end, "rgba(150, 90, 170, 0.12)"),
+            (overnight2_start, overnight2_end, "rgba(80, 80, 120, 0.12)"),
+        ]
+
+        for x0, x1, color in windows:
+            left = max(x0, x_min)
+            right = min(x1, x_max)
+            if left < right:
+                fig.add_vrect(
+                    x0=left,
+                    x1=right,
+                    fillcolor=color,
+                    opacity=1,
+                    line_width=0,
+                    layer="below",
+                )
+
+        current_day += timedelta(days=1)
+
+    return fig
+
+
 def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
     fig = go.Figure()
 
@@ -293,14 +359,18 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
         )
     )
 
+    fig = add_session_backgrounds(fig, hist_df)
+
     for _, row in levels_df.iterrows():
         level = float(row["level"])
         side = str(row.get("side", ""))
-        action = str(row.get("action", "SKIP"))
+        direction = str(row.get("direction", "SKIP"))
         gex = row.get("level_gex", 0)
         vex = row.get("level_vex", 0)
         dynamic_score = row.get("dynamic_score", 0)
         static_score = row.get("static_score", 0)
+        signal = row.get("trade_now_signal", "PLAN")
+        behavior = row.get("market_behavior", "")
         outcome = get_chart_outcome_label(row)
 
         line_color = "#00C853" if side == "SUPPORT" else "#D50000"
@@ -308,8 +378,8 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
 
         label_text = (
             f"{level:.2f} | Static {static_score} | Dynamic {dynamic_score} | "
-            f"GEX {gex:,.0f} | VEX {vex:,.0f} | "
-            f"{outcome} | {action}"
+            f"{behavior} | {signal} | GEX {gex:,.0f} | VEX {vex:,.0f} | "
+            f"{outcome} | {direction}"
         )
 
         fig.add_hline(
@@ -331,10 +401,10 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
     )
 
     fig.update_layout(
-        title=f"{ticker} - Last 24h (Premarket + Market + Aftermarket)",
+        title=f"{ticker} - Last 24h (Premarket + Market + Aftermarket + Overnight)",
         xaxis_title="Time",
         yaxis_title="Price",
-        height=600,
+        height=650,
         legend_title="Series",
         margin=dict(l=30, r=30, t=50, b=30),
     )
@@ -458,7 +528,7 @@ with tab1:
         st.divider()
 
 with tab2:
-    st.write("Charts show the last 24 hours of 1-minute bars including premarket, market hours, aftermarket, and overnight.")
+    st.write("Charts show the last 24 hours with different background colors for premarket, aftermarket, and overnight.")
 
     for ticker in (tickers or DEFAULT_TICKERS):
         st.header(f"{ticker} Chart")
@@ -477,13 +547,21 @@ with tab2:
                 "level",
                 "level_gex",
                 "level_vex",
+                "vex_strength",
+                "gamma_strength",
+                "market_behavior",
+                "best_trade_type",
+                "direction",
                 "static_score",
                 "static_grade",
                 "dynamic_score",
-                "hold_break_bias",
-                "action",
                 "grade",
-                "gamma_strength",
+                "trade_now_signal",
+                "bounce_probability",
+                "breakout_probability",
+                "entry",
+                "stop",
+                "target",
             ]
             cols = [c for c in cols if c in levels_df.columns]
 
