@@ -1,1 +1,18 @@
-{"last_refresh_ny": null}
+{
+  "last_refresh_ny": "2026-03-23T12:37:59.816702-04:00",
+  "tickers": [
+    "SPY",
+    "QQQ"
+  ],
+  "weights": [
+    0.5,
+    0.3,
+    0.2
+  ],
+  "max_distance": 30,
+  "num_levels": 15,
+  "files_written": [
+    "data_cache/oi_SPY.json",
+    "data_cache/oi_QQQ.json"
+  ]
+}
