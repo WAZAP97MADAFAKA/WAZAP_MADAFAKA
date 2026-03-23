@@ -252,13 +252,7 @@ def render_confluence_section(confluence):
         "market_behavior",
         "best_trade_type",
         "direction",
-        "static_score",
-        "static_grade",
-        "dynamic_score",
-        "grade",
-        "confidence",
         "hold_break_bias",
-        "trade_now_signal",
         "bounce_probability",
         "breakout_probability",
         "entry",
@@ -267,6 +261,13 @@ def render_confluence_section(confluence):
         "distance_to_spot",
     ]
     cols = [c for c in cols if c in levels.columns]
+
+        #"static_score",
+        #"static_grade",
+        #"dynamic_score",
+        #"grade",
+        #"confidence",
+        #"trade_now_signal",
 
     st.dataframe(levels[cols], use_container_width=True, hide_index=True)
 
@@ -735,11 +736,6 @@ with tab2:
                 "market_behavior",
                 "best_trade_type",
                 "direction",
-                "static_score",
-                "static_grade",
-                "dynamic_score",
-                "grade",
-                "trade_now_signal",
                 "bounce_probability",
                 "breakout_probability",
                 "entry",
@@ -747,6 +743,12 @@ with tab2:
                 "target",
             ]
             cols = [c for c in cols if c in levels_df.columns]
+
+                #"static_score",
+                #"static_grade",
+                #"dynamic_score",
+                #"grade",
+                #"trade_now_signal",
 
             fig = build_chart_for_ticker(
                 ticker=ticker,
