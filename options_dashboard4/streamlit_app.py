@@ -957,7 +957,11 @@ with tab2:
                 levels_df=levels_df,
                 current_spot=float(data["gamma"]["spot"]),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(
+                fig, 
+                use_container_width=True,
+                key=f"{ticker}_main_price_chart",
+            )
 
             st.write("### Level Summary")
             st.dataframe(levels_df[cols], use_container_width=True, hide_index=True)
@@ -998,7 +1002,11 @@ with tab3:
         c2.metric("Gamma Key Level", gamma.get("key_level", "N/A"))
         c3.metric("Gamma Flip", gamma.get("gamma_flip", "N/A"))
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(
+            fig, 
+            use_container_width=True,
+            key=f"{ticker}_main_gex_chart",
+        )
 
         st.write("### Strongest GEX Strikes")
         gex_cols = [
@@ -1046,7 +1054,11 @@ with tab4:
                     levels_df=levels_df,
                     current_spot=float(gamma["spot"]),
                 )
-                st.plotly_chart(price_fig, use_container_width=True)
+                st.plotly_chart(
+                    price_fig, 
+                    use_container_width=True,
+                    key=f"{ticker}_hybrid_price_chart",
+                )
 
             with right_col:
                 hybrid_fig, curve_df = build_hybrid_gex_chart(
@@ -1056,7 +1068,11 @@ with tab4:
                 )
 
                 if hybrid_fig is not None:
-                    st.plotly_chart(hybrid_fig, use_container_width=True)
+                    st.plotly_chart(
+                        hybrid_fig, 
+                        use_container_width=True,
+                        key=f"{ticker}_hybrid_gex_chart",
+                    )
                 else:
                     st.warning(f"No hybrid GEX data available for {ticker}.")
                     curve_df = pd.DataFrame()
