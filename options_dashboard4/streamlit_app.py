@@ -298,14 +298,6 @@ def get_chart_outcome_label(row):
     return "NEUTRAL"
 
 
-def drop_weekends(hist_df):
-    if hist_df.empty:
-        return hist_df
-    df = hist_df.copy()
-    df = df[df["datetime"].dt.weekday < 5].copy()
-    return df.reset_index(drop=True)
-
-
 def add_session_backgrounds(fig, hist_df):
     if hist_df.empty:
         return fig
@@ -357,8 +349,6 @@ def add_session_backgrounds(fig, hist_df):
 
 
 def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
-    hist_df = drop_weekends(hist_df)
-
     fig = go.Figure()
 
     fig.add_trace(
@@ -418,6 +408,11 @@ def build_chart_for_ticker(ticker, hist_df, levels_df, current_spot):
         height=650,
         legend_title="Series",
         margin=dict(l=30, r=30, t=50, b=30),
+        xaxis=dict(
+            rangebreaks=[
+                dict(bounds=["sat", "mon"])
+            ]
+        ),
     )
 
     return fig
@@ -433,7 +428,6 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
 
     curve = curve.sort_values("strike").reset_index(drop=True)
 
-    # Build support/resistance map from gamma tables
     support_strikes = set()
     resistance_strikes = set()
 
@@ -554,7 +548,6 @@ def build_gex_bar_chart(ticker, gamma, oi_key_level):
             xanchor="right",
         )
 
-    # Add R / S labels on top of bars
     for _, row in curve.iterrows():
         strike = float(row["strike"])
         gex_val = float(row["weighted_gex"])
@@ -718,7 +711,7 @@ with tab1:
         st.divider()
 
 with tab2:
-    st.write("Charts show the last 24 hours with different background colors for premarket, aftermarket, and overnight. Saturdays and Sundays are excluded.")
+    st.write("Charts show the last 24 hours with different background colors for premarket, aftermarket, and overnight. Saturdays and Sundays are removed from the x-axis.")
 
     for ticker in (tickers or DEFAULT_TICKERS):
         st.header(f"{ticker} Chart")
@@ -730,7 +723,6 @@ with tab2:
 
         try:
             hist = cached_intraday_history(ticker)
-            hist = drop_weekends(hist)
             levels_df = data["confluence"]["levels"].copy()
 
             cols = [
@@ -765,10 +757,7 @@ with tab2:
             st.plotly_chart(fig, use_container_width=True)
 
             st.write("### Level Summary")
-            gex_cols = ["strike", "sr_type", "weighted_gex", "abs_weighted_gex"]
-            gex_cols = [c for c in gex_cols if c in curve_df.columns]
-            st.dataframe(curve_df[gex_cols].head(20), use_container_width=True, hide_index=True)
-
+            st.dataframe(levels_df[cols], use_container_width=True, hide_index=True)
 
         except Exception as e:
             st.error(f"{ticker} chart error: {e}")
@@ -808,6 +797,8 @@ with tab3:
         st.plotly_chart(fig, use_container_width=True)
 
         st.write("### Strongest GEX Strikes")
-        st.dataframe(curve_df.head(20), use_container_width=True, hide_index=True)
+        gex_cols = ["strike", "sr_type", "weighted_gex", "abs_weighted_gex"]
+        gex_cols = [c for c in gex_cols if c in curve_df.columns]
+        st.dataframe(curve_df[gex_cols].head(20), use_container_width=True, hide_index=True)
 
         st.divider()
