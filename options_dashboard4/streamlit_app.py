@@ -253,7 +253,6 @@ def render_confluence_section(confluence):
         "best_trade_type",
         "direction",
         "hold_break_bias",
-        "trade_now_signal",
         "bounce_probability",
         "breakout_probability",
         "entry",
