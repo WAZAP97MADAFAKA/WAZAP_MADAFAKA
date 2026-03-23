@@ -1790,47 +1790,50 @@ def get_data_for_ticker(ticker):
 
 with tab3:
     st.header("Hybrid View")
+    st.write(
+        "Hybrid view combines a 16-hour OI price chart with a GEX-by-strike chart "
+        "inside one shared subplot figure, so levels line up exactly."
+    )
 
-    st.subheader("Futures Mapping (Auto Regression)")
+    # Use ONLY the sidebar regression inputs/settings
+    spy_a, spy_b = calculate_regression_from_points(
+        settings.get("spy_x1", 0.0),
+        settings.get("spy_x2", 0.0),
+        settings.get("spy_y1", 0.0),
+        settings.get("spy_y2", 0.0),
+    )
 
-    col1, col2 = st.columns(2)
+    qqq_a, qqq_b = calculate_regression_from_points(
+        settings.get("qqq_x1", 0.0),
+        settings.get("qqq_x2", 0.0),
+        settings.get("qqq_y1", 0.0),
+        settings.get("qqq_y2", 0.0),
+    )
 
-    with col1:
-        st.markdown("### SPY → ES")
-        spy_x1 = st.number_input("SPY X1", value=650.0, key="spy_x1_tab3")
-        spy_x2 = st.number_input("SPY X2", value=660.0, key="spy_x2_tab3")
-        es_y1 = st.number_input("ES Y1", value=5200.0, key="es_y1_tab3")
-        es_y2 = st.number_input("ES Y2", value=5280.0, key="es_y2_tab3")
+    st.subheader("Active Futures Mapping")
+    c1, c2 = st.columns(2)
 
-    with col2:
-        st.markdown("### QQQ → MNQ")
-        qqq_x1 = st.number_input("QQQ X1", value=450.0, key="qqq_x1_tab3")
-        qqq_x2 = st.number_input("QQQ X2", value=460.0, key="qqq_x2_tab3")
-        mnq_y1 = st.number_input("MNQ Y1", value=15500.0, key="mnq_y1_tab3")
-        mnq_y2 = st.number_input("MNQ Y2", value=15800.0, key="mnq_y2_tab3")
+    with c1:
+        if spy_a is not None and spy_b is not None:
+            st.write(f"**SPY → ES:** a = {spy_a:.6f}, b = {spy_b:.6f}")
+        else:
+            st.warning("SPY → ES mapping invalid. X1 and X2 cannot be equal.")
 
-    def compute_regression(x1, x2, y1, y2):
-        if x2 == x1:
-            return 0.0, 0.0
-        b = (y2 - y1) / (x2 - x1)
-        a = y1 - b * x1
-        return a, b
-
-    spy_a, spy_b = compute_regression(spy_x1, spy_x2, es_y1, es_y2)
-    qqq_a, qqq_b = compute_regression(qqq_x1, qqq_x2, mnq_y1, mnq_y2)
-
-    st.write(f"SPY→ES: a={round(spy_a, 2)} b={round(spy_b, 4)}")
-    st.write(f"QQQ→MNQ: a={round(qqq_a, 2)} b={round(qqq_b, 4)}")
+    with c2:
+        if qqq_a is not None and qqq_b is not None:
+            st.write(f"**QQQ → MNQ:** a = {qqq_a:.6f}, b = {qqq_b:.6f}")
+        else:
+            st.warning("QQQ → MNQ mapping invalid. X1 and X2 cannot be equal.")
 
     regression_settings = {
-        "spy_x1": spy_x1,
-        "spy_x2": spy_x2,
-        "spy_y1": es_y1,
-        "spy_y2": es_y2,
-        "qqq_x1": qqq_x1,
-        "qqq_x2": qqq_x2,
-        "qqq_y1": mnq_y1,
-        "qqq_y2": mnq_y2,
+        "spy_x1": settings.get("spy_x1", 0.0),
+        "spy_x2": settings.get("spy_x2", 0.0),
+        "spy_y1": settings.get("spy_y1", 0.0),
+        "spy_y2": settings.get("spy_y2", 0.0),
+        "qqq_x1": settings.get("qqq_x1", 0.0),
+        "qqq_x2": settings.get("qqq_x2", 0.0),
+        "qqq_y1": settings.get("qqq_y1", 0.0),
+        "qqq_y2": settings.get("qqq_y2", 0.0),
     }
 
     for ticker in (tickers or DEFAULT_TICKERS):
