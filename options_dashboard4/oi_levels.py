@@ -50,7 +50,17 @@ def get_oi_levels(
         ignore_index=True,
     )
 
-    key_level = choose_nearest_key_level(combined_levels, spot, "weighted_open_interest")
+    # 🔥 TRUE OI KEY (dominant level, NOT nearest to spot)
+    combined_levels = combined_levels.dropna(subset=["strike", "weighted_open_interest"])
+
+    if not combined_levels.empty:
+        combined_levels = combined_levels.sort_values(
+            "weighted_open_interest", ascending=False
+        ).reset_index(drop=True)
+        key_level = float(combined_levels.iloc[0]["strike"])
+    else:
+        key_level = None
+
     search_min, search_max = get_local_range(spot, max_distance)
 
     return {

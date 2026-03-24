@@ -114,6 +114,7 @@ def get_gamma_levels(
     gamma_flip = estimate_gamma_flip(combined_all)
     total_net_gex = float(combined_all["weighted_gex"].sum()) if not combined_all.empty else 0.0
 
+    # 🔥 TRUE GAMMA KEY (dominant level, NOT nearest to spot)
     key_candidates = pd.concat(
         [
             local_calls.assign(abs_weighted_gex=local_calls["weighted_gex"].abs()),
@@ -121,7 +122,15 @@ def get_gamma_levels(
         ],
         ignore_index=True,
     )
-    key_level = choose_nearest_key_level(key_candidates, spot, "abs_weighted_gex")
+
+    key_candidates = key_candidates.dropna(subset=["strike", "abs_weighted_gex"])
+
+    if not key_candidates.empty:
+        key_candidates = key_candidates.sort_values("abs_weighted_gex", ascending=False).reset_index(drop=True)
+        key_level = float(key_candidates.iloc[0]["strike"])
+    else:
+        key_level = None
+
     search_min, search_max = get_local_range(spot, max_distance)
 
     regime = infer_gamma_regime_from_net_gex(spot, gamma_flip, total_net_gex)
