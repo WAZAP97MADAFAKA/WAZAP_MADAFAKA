@@ -617,12 +617,13 @@ def build_hybrid_subplot_figure(
         col=2,
     )
 
-    gamma_key_level = gamma.get("key_level")
+    gamma_key_local = gamma.get("gamma_key_local", gamma.get("key_level"))
+    gamma_key_global = gamma.get("gamma_key_global")
     gamma_flip = gamma.get("gamma_flip")
 
-    if gamma_key_level is not None:
+    if gamma_key_local is not None:
         fig.add_hline(
-            y=float(gamma_key_level),
+            y=float(gamma_key_local),
             line_width=2,
             line_dash="dash",
             line_color="#FFD54F",
@@ -633,13 +634,35 @@ def build_hybrid_subplot_figure(
             xref="paper",
             yref="y",
             x=0.985,
-            y=float(gamma_key_level),
-            text=f"Gamma Key {float(gamma_key_level):.2f}",
+            y=float(gamma_key_local),
+            text=f"Gamma Key Local {float(gamma_key_local):.2f}",
             showarrow=False,
             font=dict(color="#FFD54F", size=11),
             bgcolor="rgba(0,0,0,0.35)",
             xanchor="right",
             yanchor="bottom",
+        )
+
+    if gamma_key_global is not None:
+        fig.add_hline(
+            y=float(gamma_key_global),
+            line_width=2,
+            line_dash="dot",
+            line_color="#BA68C8",
+            row=1,
+            col=2,
+        )
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=0.985,
+            y=float(gamma_key_global),
+            text=f"Gamma Key Global {float(gamma_key_global):.2f}",
+            showarrow=False,
+            font=dict(color="#BA68C8", size=11),
+            bgcolor="rgba(0,0,0,0.35)",
+            xanchor="right",
+            yanchor="top",
         )
 
     if oi_key_level is not None:
@@ -683,7 +706,7 @@ def build_hybrid_subplot_figure(
             font=dict(color="#FF9800", size=11),
             bgcolor="rgba(0,0,0,0.35)",
             xanchor="right",
-            yanchor="top",
+            yanchor="middle",
         )
 
     max_abs_x = max(curve["abs_weighted_gex"].max(), 1.0)
@@ -743,7 +766,6 @@ def build_hybrid_subplot_figure(
     )
 
     return fig, curve
-
 
 def get_shared_yaxis_config(forced_y_range):
     if forced_y_range is None:
@@ -889,13 +911,14 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
         )
     )
 
-    gamma_key_level = gamma.get("key_level")
+    gamma_key_local = gamma.get("gamma_key_local", gamma.get("key_level"))
+    gamma_key_global = gamma.get("gamma_key_global")
     gamma_flip = gamma.get("gamma_flip")
     current_spot = gamma.get("spot")
 
-    if gamma_key_level is not None:
+    if gamma_key_local is not None:
         fig.add_hline(
-            y=float(gamma_key_level),
+            y=float(gamma_key_local),
             line_width=2,
             line_dash="dash",
             line_color="#FFD54F",
@@ -904,13 +927,34 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
             xref="paper",
             yref="y",
             x=0.98,
-            y=float(gamma_key_level),
-            text=f"Gamma Key {float(gamma_key_level):.2f}",
+            y=float(gamma_key_local),
+            text=f"Gamma Key Local {float(gamma_key_local):.2f}",
             showarrow=False,
             font=dict(color="#FFD54F"),
             bgcolor="rgba(0,0,0,0.35)",
             xanchor="right",
             yanchor="bottom",
+            xshift=-4,
+        )
+
+    if gamma_key_global is not None:
+        fig.add_hline(
+            y=float(gamma_key_global),
+            line_width=2,
+            line_dash="dot",
+            line_color="#BA68C8",
+        )
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=0.98,
+            y=float(gamma_key_global),
+            text=f"Gamma Key Global {float(gamma_key_global):.2f}",
+            showarrow=False,
+            font=dict(color="#BA68C8"),
+            bgcolor="rgba(0,0,0,0.35)",
+            xanchor="right",
+            yanchor="top",
             xshift=-4,
         )
 
@@ -952,7 +996,7 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
             font=dict(color="#FF9800"),
             bgcolor="rgba(0,0,0,0.35)",
             xanchor="right",
-            yanchor="top",
+            yanchor="middle",
             xshift=-4,
         )
 
