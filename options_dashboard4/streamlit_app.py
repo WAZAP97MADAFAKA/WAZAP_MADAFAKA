@@ -1912,9 +1912,16 @@ def render_hybrid_gex_table(enriched_df: pd.DataFrame, ticker: str):
     futures_col_name = get_futures_equivalent_label(ticker)
 
     display_df = enriched_df.copy()
+
     if "Futures Equivalent" in display_df.columns:
         display_df[futures_col_name] = display_df["Futures Equivalent"]
         display_df = display_df.drop(columns=["Futures Equivalent"])
+
+    if "decision_reason" in display_df.columns:
+        display_df["decision_reason"] = display_df["decision_reason"].fillna("").astype(str)
+
+    if "key_interaction" in display_df.columns:
+        display_df["key_interaction"] = display_df["key_interaction"].fillna("").astype(str)
 
     display_cols = [
         "strike",
@@ -2107,4 +2114,3 @@ with tab3:
         except Exception as e:
             st.error(f"{ticker} hybrid view error: {e}")
             st.divider()
-            
