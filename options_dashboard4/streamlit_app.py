@@ -2163,7 +2163,7 @@ for ticker in (tickers or DEFAULT_TICKERS):
             tuple(weights),
             float(max_distance),
             int(num_levels),
-        oi_payload.get("oi_fixed_spot"),
+            oi_payload.get("oi_fixed_spot"),
         )
 
         oi_for_confluence = {
