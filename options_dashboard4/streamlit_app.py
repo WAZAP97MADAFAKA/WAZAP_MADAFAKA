@@ -484,7 +484,50 @@ def build_hybrid_subplot_figure(
         col=1,
     )
 
-    current_spot = float(gamma["spot"])
+    if not hist_df.empty:
+        x_min = hist_df["datetime"].min()
+        x_max = hist_df["datetime"].max()
+        start_day = x_min.normalize()
+        end_day = x_max.normalize()
+
+        current_day = start_day
+        while current_day <= end_day:
+            if current_day.weekday() < 5:
+                overnight_start = current_day
+                overnight_end = current_day + timedelta(hours=4)
+
+                premarket_start = current_day + timedelta(hours=4)
+                premarket_end = current_day + timedelta(hours=9, minutes=30)
+
+                aftermarket_start = current_day + timedelta(hours=16)
+                aftermarket_end = current_day + timedelta(hours=20)
+
+                overnight2_start = current_day + timedelta(hours=20)
+                overnight2_end = current_day + timedelta(days=1)
+
+                windows = [
+                    (overnight_start, overnight_end, "rgba(80, 80, 120, 0.12)"),
+                    (premarket_start, premarket_end, "rgba(70, 120, 180, 0.12)"),
+                    (aftermarket_start, aftermarket_end, "rgba(150, 90, 170, 0.12)"),
+                    (overnight2_start, overnight2_end, "rgba(80, 80, 120, 0.12)"),
+                ]
+
+                for x0, x1, color in windows:
+                    left = max(x0, x_min)
+                    right = min(x1, x_max)
+                    if left < right:
+                        fig.add_vrect(
+                            x0=left,
+                            x1=right,
+                            fillcolor=color,
+                            opacity=1,
+                            line_width=0,
+                            layer="below",
+                            row=1,
+                            col=1,
+                        )
+
+            current_day += timedelta(days=1)
 
     for _, row in levels_df.iterrows():
         level = float(row["level"])
@@ -501,6 +544,20 @@ def build_hybrid_subplot_figure(
             col=1,
         )
 
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=0.60,
+            y=level,
+            text=f"{level:.2f}",
+            showarrow=False,
+            font=dict(size=10, color=line_color),
+            bgcolor="rgba(0,0,0,0.25)",
+            xanchor="left",
+            yanchor="middle",
+        )
+
+    current_spot = float(gamma["spot"])
     fig.add_hline(
         y=current_spot,
         line_color="#64B5F6",
@@ -508,6 +565,19 @@ def build_hybrid_subplot_figure(
         line_dash="dash",
         row=1,
         col=1,
+    )
+
+    fig.add_annotation(
+        xref="paper",
+        yref="y",
+        x=0.01,
+        y=current_spot,
+        text=f"Spot {current_spot:.2f}",
+        showarrow=False,
+        font=dict(size=11, color="#64B5F6"),
+        bgcolor="rgba(0,0,0,0.35)",
+        xanchor="left",
+        yanchor="middle",
     )
 
     curve = pd.DataFrame(gamma.get("gex_curve", []))
@@ -519,7 +589,7 @@ def build_hybrid_subplot_figure(
 
     curve = curve.sort_values("strike").reset_index(drop=True)
 
-    def classify_gamma_side_context(weighted_gex, strike, spot):
+    def classify_gamma_side(weighted_gex, strike, spot):
         if pd.isna(weighted_gex) or pd.isna(strike) or pd.isna(spot):
             return "OTHER"
 
@@ -544,14 +614,13 @@ def build_hybrid_subplot_figure(
         return "OTHER"
 
     curve["gamma_side"] = curve.apply(
-        lambda row: classify_gamma_side_context(
+        lambda row: classify_gamma_side(
             row["weighted_gex"],
             row["strike"],
             current_spot,
         ),
         axis=1,
     )
-
     curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
 
     colors = ["#00C853" if float(v) >= 0 else "#D50000" for v in curve["weighted_gex"]]
@@ -678,7 +747,6 @@ def build_hybrid_subplot_figure(
             continue
 
         label_x = gex_val + (0.03 * max_abs_x if gex_val >= 0 else -0.03 * max_abs_x)
-
         fig.add_annotation(
             x=label_x,
             y=strike,
@@ -697,7 +765,21 @@ def build_hybrid_subplot_figure(
     fig.update_yaxes(shared_yaxis, row=1, col=1)
     fig.update_yaxes(shared_yaxis, row=1, col=2)
 
+    fig.update_xaxes(
+        title_text="Time",
+        rangebreaks=[dict(bounds=["sat", "mon"])],
+        rangeslider=dict(visible=False),
+        row=1,
+        col=1,
+    )
+    fig.update_xaxes(
+        title_text="Weighted GEX",
+        row=1,
+        col=2,
+    )
+
     fig.update_layout(
+        title=f"{ticker} - Hybrid View",
         template="plotly_dark",
         height=700,
         margin=dict(l=60, r=100, t=70, b=50),
@@ -822,10 +904,9 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
         return None, pd.DataFrame()
 
     curve = curve.sort_values("strike").reset_index(drop=True)
-
     current_spot = float(gamma["spot"])
 
-    def classify_gamma_side_context(weighted_gex, strike, spot):
+    def classify_gamma_side(weighted_gex, strike, spot):
         if pd.isna(weighted_gex) or pd.isna(strike) or pd.isna(spot):
             return "OTHER"
 
@@ -850,14 +931,13 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
         return "OTHER"
 
     curve["gamma_side"] = curve.apply(
-        lambda row: classify_gamma_side_context(
+        lambda row: classify_gamma_side(
             row["weighted_gex"],
             row["strike"],
             current_spot,
         ),
         axis=1,
     )
-
     curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
 
     colors = ["#00C853" if float(v) >= 0 else "#D50000" for v in curve["weighted_gex"]]
@@ -870,6 +950,7 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
             x=curve["weighted_gex"],
             orientation="h",
             marker_color=colors,
+            name="Weighted GEX",
         )
     )
 
@@ -1000,7 +1081,6 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
             continue
 
         label_x = gex_val + (0.03 * max_abs_x if gex_val >= 0 else -0.03 * max_abs_x)
-
         fig.add_annotation(
             x=label_x,
             y=strike,
@@ -1008,6 +1088,8 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
             showarrow=False,
             font=dict(color=color, size=12),
             bgcolor="rgba(0,0,0,0.35)",
+            xanchor="center",
+            yanchor="middle",
         )
 
     shared_yaxis = get_shared_yaxis_config(forced_y_range)
@@ -1312,7 +1394,7 @@ def enrich_gex_table(
         if pd.isna(max_abs_gex):
             max_abs_gex = 0.0
 
-    def classify_gamma_side_context(weighted_gex, strike, spot):
+    def classify_gamma_side(weighted_gex, strike, spot):
         if pd.isna(weighted_gex) or pd.isna(strike) or pd.isna(spot):
             return "OTHER"
 
@@ -1336,21 +1418,16 @@ def enrich_gex_table(
 
         return "OTHER"
 
-    def gamma_behavior_label(gamma_side):
-        gamma_side = str(gamma_side or "OTHER")
-        if gamma_side in ["SUPPORT", "RESISTANCE"]:
-            return "STABLE"
-        if "BREAKOUT-PRONE" in gamma_side:
-            return "UNSTABLE"
-        return "OTHER"
-
-    def gamma_direction_label(gamma_side):
+    def gamma_direction(gamma_side):
         gamma_side = str(gamma_side or "OTHER")
         if "SUPPORT" in gamma_side:
             return "SUPPORT"
         if "RESISTANCE" in gamma_side:
             return "RESISTANCE"
         return "OTHER"
+
+    def gamma_is_breakout_prone(gamma_side):
+        return "BREAKOUT-PRONE" in str(gamma_side or "")
 
     def get_threshold():
         return 0.5 if ticker == "SPY" else 1.0
@@ -1525,14 +1602,14 @@ def enrich_gex_table(
         threshold = get_threshold()
         confirm_buffer = get_confirm_buffer()
 
-        gamma_behavior = gamma_behavior_label(gamma_side)
-        gamma_direction = gamma_direction_label(gamma_side)
+        gamma_dir = gamma_direction(gamma_side)
+        breakout_prone = gamma_is_breakout_prone(gamma_side)
 
-        if oi_side == gamma_direction and oi_side != "OTHER":
+        if oi_side == gamma_dir and oi_side != "OTHER":
             agreement = "ALIGNED"
-        elif oi_side == "OTHER" and gamma_direction != "OTHER":
+        elif oi_side == "OTHER" and gamma_dir != "OTHER":
             agreement = "GAMMA_ONLY"
-        elif oi_side != gamma_direction and oi_side != "OTHER" and gamma_direction != "OTHER":
+        elif oi_side != gamma_dir and oi_side != "OTHER" and gamma_dir != "OTHER":
             agreement = "FLIP"
         else:
             agreement = "OTHER"
@@ -1563,57 +1640,57 @@ def enrich_gex_table(
         trigger_state = "NONE"
         breakout_risk = "LOW"
 
-        if agreement == "ALIGNED" and gamma_regime == "SHORT_GAMMA":
+        if agreement == "ALIGNED" and gamma_regime == "SHORT_GAMMA" and not breakout_prone:
             if vex_strength == "HIGH" and abs(float(strike) - float(spot)) <= threshold * 2:
                 breakout_risk = "HIGH"
             elif vex_strength == "MEDIUM" and abs(float(strike) - float(spot)) <= threshold * 2:
                 breakout_risk = "MEDIUM"
 
-        if agreement == "FLIP" and oi_side == "RESISTANCE" and gamma_direction == "SUPPORT":
+        if agreement == "FLIP" and oi_side == "RESISTANCE" and gamma_dir == "SUPPORT":
             if vex_strength in ["MEDIUM", "HIGH"]:
                 if float(spot) < float(strike) and abs(float(strike) - float(spot)) <= threshold * 2:
                     trigger_state = "PRE_BREAKOUT"
                 elif float(spot) >= float(strike) + confirm_buffer:
                     trigger_state = "CONFIRMED_BREAKOUT"
 
-        elif agreement == "FLIP" and oi_side == "SUPPORT" and gamma_direction == "RESISTANCE":
+        elif agreement == "FLIP" and oi_side == "SUPPORT" and gamma_dir == "RESISTANCE":
             if vex_strength in ["MEDIUM", "HIGH"]:
                 if float(spot) > float(strike) and abs(float(strike) - float(spot)) <= threshold * 2:
                     trigger_state = "PRE_BREAKDOWN"
                 elif float(spot) <= float(strike) - confirm_buffer:
                     trigger_state = "CONFIRMED_BREAKDOWN"
 
-        elif agreement == "ALIGNED" and gamma_behavior == "STABLE":
-            if gamma_direction == "RESISTANCE" and float(spot) <= float(strike):
+        elif agreement == "ALIGNED" and not breakout_prone:
+            if gamma_dir == "RESISTANCE" and float(spot) <= float(strike):
                 trigger_state = "REJECTION_ZONE"
-            elif gamma_direction == "SUPPORT" and float(spot) >= float(strike):
+            elif gamma_dir == "SUPPORT" and float(spot) >= float(strike):
                 trigger_state = "REJECTION_ZONE"
 
-        if "SPOT_NEAR_GAMMA_KEY" in key_interaction and gamma_behavior == "STABLE":
+        if "SPOT_NEAR_GAMMA_KEY" in key_interaction and agreement in ["ALIGNED", "GAMMA_ONLY"] and not breakout_prone:
             market_behavior = "PINNED"
-            if gamma_direction == "SUPPORT":
+            if gamma_dir == "SUPPORT":
                 direction = "LONG"
                 best_trade_type = "SCALP"
                 auto_flag = "SCALP_ONLY"
-                decision_reason = "Spot near stable Gamma Key: pinning/magnet behavior, prefer quick long scalps."
-            elif gamma_direction == "RESISTANCE":
+                decision_reason = "Spot near Gamma Key: pinning/magnet behavior, prefer quick long scalps."
+            elif gamma_dir == "RESISTANCE":
                 direction = "SHORT"
                 best_trade_type = "SCALP"
                 auto_flag = "SCALP_ONLY"
-                decision_reason = "Spot near stable Gamma Key: pinning/magnet behavior, prefer quick short scalps."
+                decision_reason = "Spot near Gamma Key: pinning/magnet behavior, prefer quick short scalps."
 
         elif "SPOT_NEAR_GAMMA_FLIP" in key_interaction:
             if vex_strength == "HIGH":
-                if gamma_direction == "SUPPORT":
+                if gamma_dir == "SUPPORT":
                     direction = "LONG"
                     best_trade_type = "WATCH_BREAKOUT"
                     auto_flag = "WATCH_UP"
-                    decision_reason = "Spot near Gamma Flip with high VEX and supportive gamma: watch for upside expansion."
-                elif gamma_direction == "RESISTANCE":
+                    decision_reason = "Spot near Gamma Flip with high VEX and gamma support: watch for upside expansion."
+                elif gamma_dir == "RESISTANCE":
                     direction = "SHORT"
                     best_trade_type = "WATCH_BREAKDOWN"
                     auto_flag = "WATCH_DOWN"
-                    decision_reason = "Spot near Gamma Flip with high VEX and resisting gamma: watch for downside expansion."
+                    decision_reason = "Spot near Gamma Flip with high VEX and gamma resistance: watch for downside expansion."
                 else:
                     auto_flag = "TRANSITION_SKIP"
                     decision_reason = "Near Gamma Flip with no directional gamma side: transition zone."
@@ -1621,17 +1698,17 @@ def enrich_gex_table(
                 auto_flag = "TRANSITION_SKIP"
                 decision_reason = "Near Gamma Flip without enough VEX: transition/chop risk."
 
-        elif "AT_GAMMA_KEY" in key_interaction and "AT_OI_KEY" in key_interaction and agreement == "ALIGNED" and gamma_behavior == "STABLE":
-            if gamma_direction == "SUPPORT":
+        elif "AT_GAMMA_KEY" in key_interaction and "AT_OI_KEY" in key_interaction and agreement == "ALIGNED" and not breakout_prone:
+            if gamma_dir == "SUPPORT":
                 direction = "LONG"
                 best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
                 auto_flag = "A_PLUS_SUPPORT"
-                decision_reason = "Gamma Key and OI Key aligned at stable support: strongest long reaction zone."
-            elif gamma_direction == "RESISTANCE":
+                decision_reason = "Gamma Key and OI Key aligned at support: strongest long reaction zone."
+            elif gamma_dir == "RESISTANCE":
                 direction = "SHORT"
                 best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
                 auto_flag = "A_PLUS_RESISTANCE"
-                decision_reason = "Gamma Key and OI Key aligned at stable resistance: strongest short reaction zone."
+                decision_reason = "Gamma Key and OI Key aligned at resistance: strongest short reaction zone."
 
         elif trigger_state == "CONFIRMED_BREAKOUT":
             direction = "LONG"
@@ -1643,7 +1720,7 @@ def enrich_gex_table(
             direction = "LONG"
             best_trade_type = "WATCH_BREAKOUT"
             auto_flag = "PRE_BREAKOUT"
-            decision_reason = "OI says resistance but gamma supports it. Price is still below the level: breakout may be building."
+            decision_reason = "OI says resistance but gamma supports it. Price is still below the level: breakout may be building, not confirmed yet."
 
         elif trigger_state == "CONFIRMED_BREAKDOWN":
             direction = "SHORT"
@@ -1655,93 +1732,125 @@ def enrich_gex_table(
             direction = "SHORT"
             best_trade_type = "WATCH_BREAKDOWN"
             auto_flag = "PRE_BREAKDOWN"
-            decision_reason = "OI says support but gamma resists it. Price is still above the level: breakdown may be building."
+            decision_reason = "OI says support but gamma resists it. Price is still above the level: breakdown may be building, not confirmed yet."
 
         elif agreement == "FLIP":
             if vex_strength == "HIGH":
-                if gamma_direction == "SUPPORT":
+                if gamma_dir == "SUPPORT":
                     direction = "LONG"
                     best_trade_type = "WATCH_BREAKOUT"
                     auto_flag = "WATCH_UP"
-                    decision_reason = "OI and gamma conflict with high VEX: upside squeeze possible, wait for confirmation."
-                elif gamma_direction == "RESISTANCE":
+                    decision_reason = "OI and GEX conflict with high VEX: upside squeeze possible, wait for confirmation."
+                elif gamma_dir == "RESISTANCE":
                     direction = "SHORT"
                     best_trade_type = "WATCH_BREAKDOWN"
                     auto_flag = "WATCH_DOWN"
-                    decision_reason = "OI and gamma conflict with high VEX: downside break possible, wait for confirmation."
+                    decision_reason = "OI and GEX conflict with high VEX: downside break possible, wait for confirmation."
             elif vex_strength == "MEDIUM":
-                if gamma_direction == "SUPPORT":
+                if gamma_dir == "SUPPORT":
                     direction = "LONG"
                     best_trade_type = "WATCH_BREAKOUT"
                     auto_flag = "WATCH_UP"
                     decision_reason = "Conflict with medium VEX: watch upside resolution."
-                elif gamma_direction == "RESISTANCE":
+                elif gamma_dir == "RESISTANCE":
                     direction = "SHORT"
                     best_trade_type = "WATCH_BREAKDOWN"
                     auto_flag = "WATCH_DOWN"
                     decision_reason = "Conflict with medium VEX: watch downside resolution."
             else:
                 auto_flag = "CHOP_SKIP"
-                decision_reason = "OI/gamma conflict with low VEX: chop/trap conditions."
+                decision_reason = "OI/GEX conflict with low VEX: chop/trap conditions."
 
         elif agreement == "ALIGNED":
-            if gamma_behavior == "STABLE":
-                if gamma_direction == "SUPPORT":
+            if breakout_prone:
+                if gamma_dir == "SUPPORT":
+                    direction = "SHORT"
+                    if vex_strength in ["MEDIUM", "HIGH"]:
+                        best_trade_type = "WATCH_BREAKDOWN"
+                        auto_flag = "WATCH_DOWN"
+                        decision_reason = "Breakout-prone support can fail. Watch for downside break."
+                    else:
+                        best_trade_type = "SKIP"
+                        auto_flag = "CHOP_SKIP"
+                        decision_reason = "Breakout-prone support with low VEX: messy conditions."
+                elif gamma_dir == "RESISTANCE":
+                    direction = "LONG"
+                    if vex_strength in ["MEDIUM", "HIGH"]:
+                        best_trade_type = "WATCH_BREAKOUT"
+                        auto_flag = "WATCH_UP"
+                        decision_reason = "Breakout-prone resistance can fail. Watch for upside break."
+                    else:
+                        best_trade_type = "SKIP"
+                        auto_flag = "CHOP_SKIP"
+                        decision_reason = "Breakout-prone resistance with low VEX: messy conditions."
+            else:
+                if gamma_dir == "SUPPORT":
                     direction = "LONG"
                     if vex_strength == "HIGH":
                         best_trade_type = "SCALP"
                         auto_flag = "FAST_LONG"
-                        decision_reason = "Aligned stable support with high VEX: fast long scalp."
+                        if breakout_risk == "HIGH":
+                            decision_reason = "Aligned support with high VEX in short gamma: long scalp is valid, but support-failure / breakdown risk is elevated."
+                        else:
+                            decision_reason = "Aligned support with high VEX: fast long scalp."
                     else:
                         best_trade_type = "BOUNCE"
                         auto_flag = "BOUNCE_LONG"
-                        decision_reason = "Aligned stable support: clean bounce-long setup."
+                        if breakout_risk == "HIGH":
+                            decision_reason = "Aligned support, but short-gamma environment raises breakdown risk. Respect bounce, but stay alert."
+                        else:
+                            decision_reason = "Aligned support: clean bounce-long setup."
 
-                elif gamma_direction == "RESISTANCE":
+                elif gamma_dir == "RESISTANCE":
                     direction = "SHORT"
                     if vex_strength == "HIGH":
                         best_trade_type = "SCALP"
                         auto_flag = "FAST_SHORT"
-                        decision_reason = "Aligned stable resistance with high VEX: fast short scalp."
+                        if breakout_risk == "HIGH":
+                            decision_reason = "Aligned resistance with high VEX in short gamma: short scalp is valid, but breakout-failure risk is elevated."
+                        else:
+                            decision_reason = "Aligned resistance with high VEX: fast short scalp."
                     else:
                         best_trade_type = "BOUNCE"
                         auto_flag = "BOUNCE_SHORT"
-                        decision_reason = "Aligned stable resistance: clean bounce-short setup."
-            else:
-                if gamma_direction == "SUPPORT":
-                    direction = "SHORT"
-                    best_trade_type = "WATCH_BREAKDOWN" if vex_strength in ["MEDIUM", "HIGH"] else "SKIP"
-                    auto_flag = "WATCH_DOWN" if best_trade_type != "SKIP" else "CHOP_SKIP"
-                    decision_reason = "Aligned but breakout-prone support: support can fail, prefer watching for breakdown."
-                elif gamma_direction == "RESISTANCE":
-                    direction = "LONG"
-                    best_trade_type = "WATCH_BREAKOUT" if vex_strength in ["MEDIUM", "HIGH"] else "SKIP"
-                    auto_flag = "WATCH_UP" if best_trade_type != "SKIP" else "CHOP_SKIP"
-                    decision_reason = "Aligned but breakout-prone resistance: resistance can fail, prefer watching for breakout."
+                        if breakout_risk == "HIGH":
+                            decision_reason = "Aligned resistance, but short-gamma environment raises breakout risk. Respect rejection, but stay alert."
+                        else:
+                            decision_reason = "Aligned resistance: clean bounce-short setup."
 
         elif agreement == "GAMMA_ONLY":
-            if gamma_behavior == "STABLE":
-                if gamma_direction == "SUPPORT":
+            if breakout_prone:
+                if gamma_dir == "SUPPORT":
+                    direction = "SHORT"
+                    if vex_strength in ["MEDIUM", "HIGH"]:
+                        best_trade_type = "WATCH_BREAKDOWN"
+                        auto_flag = "WATCH_DOWN"
+                        decision_reason = "Gamma-only breakout-prone support: watch for support failure."
+                    else:
+                        best_trade_type = "SKIP"
+                        auto_flag = "CHOP_SKIP"
+                        decision_reason = "Gamma-only breakout-prone support with low VEX: skip."
+                elif gamma_dir == "RESISTANCE":
+                    direction = "LONG"
+                    if vex_strength in ["MEDIUM", "HIGH"]:
+                        best_trade_type = "WATCH_BREAKOUT"
+                        auto_flag = "WATCH_UP"
+                        decision_reason = "Gamma-only breakout-prone resistance: watch for breakout."
+                    else:
+                        best_trade_type = "SKIP"
+                        auto_flag = "CHOP_SKIP"
+                        decision_reason = "Gamma-only breakout-prone resistance with low VEX: skip."
+            else:
+                if gamma_dir == "SUPPORT":
                     direction = "LONG"
                     best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
                     auto_flag = "GAMMA_ONLY_LONG"
-                    decision_reason = "Gamma-only stable support: lower-confidence long setup."
-                elif gamma_direction == "RESISTANCE":
+                    decision_reason = "Gamma-only support: lower-confidence long setup."
+                elif gamma_dir == "RESISTANCE":
                     direction = "SHORT"
                     best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
                     auto_flag = "GAMMA_ONLY_SHORT"
-                    decision_reason = "Gamma-only stable resistance: lower-confidence short setup."
-            else:
-                if gamma_direction == "SUPPORT":
-                    direction = "SHORT"
-                    best_trade_type = "WATCH_BREAKDOWN" if vex_strength in ["MEDIUM", "HIGH"] else "SKIP"
-                    auto_flag = "WATCH_DOWN" if best_trade_type != "SKIP" else "CHOP_SKIP"
-                    decision_reason = "Gamma-only breakout-prone support: watch for support failure."
-                elif gamma_direction == "RESISTANCE":
-                    direction = "LONG"
-                    best_trade_type = "WATCH_BREAKOUT" if vex_strength in ["MEDIUM", "HIGH"] else "SKIP"
-                    auto_flag = "WATCH_UP" if best_trade_type != "SKIP" else "CHOP_SKIP"
-                    decision_reason = "Gamma-only breakout-prone resistance: watch for breakout."
+                    decision_reason = "Gamma-only resistance: lower-confidence short setup."
 
         if best_trade_type == "SKIP" or direction == "SKIP":
             trade_decision = "SKIP"
@@ -1832,7 +1941,7 @@ def enrich_gex_table(
         strike = float(row["strike"])
         weighted_gex = row.get("weighted_gex", 0.0)
 
-        gamma_side = classify_gamma_side_context(
+        gamma_side = classify_gamma_side(
             weighted_gex=weighted_gex,
             strike=strike,
             spot=float(spot_price),
