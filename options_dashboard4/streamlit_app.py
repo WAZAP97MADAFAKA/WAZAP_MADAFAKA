@@ -36,14 +36,14 @@ st_autorefresh(interval=60000, key="dashboard_refresh")
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def cached_gamma(ticker, weights, max_distance, num_levels):
+def cached_gamma(ticker, weights, max_distance, num_levels, fixed_spot=None):
     return get_gamma_levels(
         ticker_symbol=ticker,
         weights=list(weights),
         max_distance=float(max_distance),
         num_levels=int(num_levels),
+        fixed_spot=fixed_spot,
     )
-
 
 @st.cache_data(ttl=60, show_spinner=False)
 def cached_intraday_history(ticker):
@@ -2163,6 +2163,7 @@ for ticker in (tickers or DEFAULT_TICKERS):
             tuple(weights),
             float(max_distance),
             int(num_levels),
+        oi_payload.get("oi_fixed_spot"),
         )
 
         oi_for_confluence = {
