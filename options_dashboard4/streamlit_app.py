@@ -2319,7 +2319,6 @@ def render_hybrid_gex_table(enriched_df: pd.DataFrame, ticker: str):
 
     styled_df = (
         display_df[display_cols + ["highlight_flag"]]
-        .head(25)
         .style
         .apply(highlight_rows, axis=1)
         .hide(axis="index")
