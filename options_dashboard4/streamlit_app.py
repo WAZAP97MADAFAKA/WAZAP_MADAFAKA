@@ -472,6 +472,9 @@ def build_hybrid_subplot_figure(
         column_widths=[0.62, 0.38],
     )
 
+    # -----------------------------
+    # Left side: price + OI levels
+    # -----------------------------
     fig.add_trace(
         go.Scatter(
             x=hist_df["datetime"],
@@ -484,51 +487,9 @@ def build_hybrid_subplot_figure(
         col=1,
     )
 
-    if not hist_df.empty:
-        x_min = hist_df["datetime"].min()
-        x_max = hist_df["datetime"].max()
-        start_day = x_min.normalize()
-        end_day = x_max.normalize()
+    current_spot = float(gamma["spot"])
 
-        current_day = start_day
-        while current_day <= end_day:
-            if current_day.weekday() < 5:
-                overnight_start = current_day
-                overnight_end = current_day + timedelta(hours=4)
-
-                premarket_start = current_day + timedelta(hours=4)
-                premarket_end = current_day + timedelta(hours=9, minutes=30)
-
-                aftermarket_start = current_day + timedelta(hours=16)
-                aftermarket_end = current_day + timedelta(hours=20)
-
-                overnight2_start = current_day + timedelta(hours=20)
-                overnight2_end = current_day + timedelta(days=1)
-
-                windows = [
-                    (overnight_start, overnight_end, "rgba(80, 80, 120, 0.12)"),
-                    (premarket_start, premarket_end, "rgba(70, 120, 180, 0.12)"),
-                    (aftermarket_start, aftermarket_end, "rgba(150, 90, 170, 0.12)"),
-                    (overnight2_start, overnight2_end, "rgba(80, 80, 120, 0.12)"),
-                ]
-
-                for x0, x1, color in windows:
-                    left = max(x0, x_min)
-                    right = min(x1, x_max)
-                    if left < right:
-                        fig.add_vrect(
-                            x0=left,
-                            x1=right,
-                            fillcolor=color,
-                            opacity=1,
-                            line_width=0,
-                            layer="below",
-                            row=1,
-                            col=1,
-                        )
-
-            current_day += timedelta(days=1)
-
+    # Plot OI levels
     for _, row in levels_df.iterrows():
         level = float(row["level"])
         side = str(row.get("side", ""))
@@ -544,20 +505,7 @@ def build_hybrid_subplot_figure(
             col=1,
         )
 
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.60,
-            y=level,
-            text=f"{level:.2f}",
-            showarrow=False,
-            font=dict(size=10, color=line_color),
-            bgcolor="rgba(0,0,0,0.25)",
-            xanchor="left",
-            yanchor="middle",
-        )
-
-    current_spot = float(gamma["spot"])
+    # Spot line
     fig.add_hline(
         y=current_spot,
         line_color="#64B5F6",
@@ -567,19 +515,9 @@ def build_hybrid_subplot_figure(
         col=1,
     )
 
-    fig.add_annotation(
-        xref="paper",
-        yref="y",
-        x=0.01,
-        y=current_spot,
-        text=f"Spot {current_spot:.2f}",
-        showarrow=False,
-        font=dict(size=11, color="#64B5F6"),
-        bgcolor="rgba(0,0,0,0.35)",
-        xanchor="left",
-        yanchor="middle",
-    )
-
+    # -----------------------------
+    # Right side: GEX bars
+    # -----------------------------
     curve = pd.DataFrame(gamma.get("gex_curve", []))
     if curve.empty:
         curve = pd.DataFrame(gamma.get("gex_curve_wide", []))
@@ -589,17 +527,36 @@ def build_hybrid_subplot_figure(
 
     curve = curve.sort_values("strike").reset_index(drop=True)
 
-    def classify_gamma_side(weighted_gex):
+    # -----------------------------
+    # ✅ NEW GAMMA SIDE LOGIC
+    # -----------------------------
+    def classify_gamma_side(weighted_gex, strike, spot):
         if pd.isna(weighted_gex):
             return "OTHER"
-        val = float(weighted_gex)
-        if val > 0:
-            return "SUPPORT"
-        if val < 0:
-            return "RESISTANCE"
+
+        gex = float(weighted_gex)
+
+        if gex > 0:
+            return "SUPPORT" if strike < spot else "RESISTANCE"
+        elif gex < 0:
+            return (
+                "BREAKOUT-PRONE SUPPORT"
+                if strike < spot
+                else "BREAKOUT-PRONE RESISTANCE"
+            )
         return "OTHER"
 
-    curve["gamma_side"] = curve["weighted_gex"].apply(classify_gamma_side)
+    spot_val = current_spot
+
+    curve["gamma_side"] = curve.apply(
+        lambda row: classify_gamma_side(
+            row["weighted_gex"],
+            row["strike"],
+            spot_val
+        ),
+        axis=1
+    )
+
     curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
 
     colors = ["#00C853" if float(v) >= 0 else "#D50000" for v in curve["weighted_gex"]]
@@ -610,105 +567,27 @@ def build_hybrid_subplot_figure(
             y=curve["strike"],
             orientation="h",
             marker_color=colors,
-            name="Weighted GEX",
             showlegend=False,
         ),
         row=1,
         col=2,
     )
 
-    gamma_key_local = gamma.get("gamma_key_local", gamma.get("key_level"))
-    gamma_key_global = gamma.get("gamma_key_global")
+    gamma_key = gamma.get("key_level")
     gamma_flip = gamma.get("gamma_flip")
 
-    if gamma_key_local is not None:
-        fig.add_hline(
-            y=float(gamma_key_local),
-            line_width=2,
-            line_dash="dash",
-            line_color="#FFD54F",
-            row=1,
-            col=2,
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.985,
-            y=float(gamma_key_local),
-            text=f"Gamma Key Local {float(gamma_key_local):.2f}",
-            showarrow=False,
-            font=dict(color="#FFD54F", size=11),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="right",
-            yanchor="bottom",
-        )
-
-    if gamma_key_global is not None:
-        fig.add_hline(
-            y=float(gamma_key_global),
-            line_width=2,
-            line_dash="dot",
-            line_color="#BA68C8",
-            row=1,
-            col=2,
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.985,
-            y=float(gamma_key_global),
-            text=f"Gamma Key Global {float(gamma_key_global):.2f}",
-            showarrow=False,
-            font=dict(color="#BA68C8", size=11),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="right",
-            yanchor="top",
-        )
+    if gamma_key is not None:
+        fig.add_hline(y=float(gamma_key), line_dash="dash", line_color="#FFD54F", row=1, col=2)
 
     if oi_key_level is not None:
-        fig.add_hline(
-            y=float(oi_key_level),
-            line_width=2,
-            line_dash="dot",
-            line_color="#64B5F6",
-            row=1,
-            col=2,
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.76,
-            y=float(oi_key_level),
-            text=f"OI Key {float(oi_key_level):.2f}",
-            showarrow=False,
-            font=dict(color="#64B5F6", size=11),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="left",
-            yanchor="bottom",
-        )
+        fig.add_hline(y=float(oi_key_level), line_dash="dot", line_color="#64B5F6", row=1, col=2)
 
     if gamma_flip is not None:
-        fig.add_hline(
-            y=float(gamma_flip),
-            line_width=2,
-            line_dash="longdash",
-            line_color="#FF9800",
-            row=1,
-            col=2,
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.985,
-            y=float(gamma_flip),
-            text=f"Gamma Flip {float(gamma_flip):.2f}",
-            showarrow=False,
-            font=dict(color="#FF9800", size=11),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="right",
-            yanchor="middle",
-        )
+        fig.add_hline(y=float(gamma_flip), line_dash="longdash", line_color="#FF9800", row=1, col=2)
 
+    # -----------------------------
+    # ✅ CLEAN LABELS (S / R)
+    # -----------------------------
     max_abs_x = max(curve["abs_weighted_gex"].max(), 1.0)
 
     for _, row in curve.iterrows():
@@ -716,16 +595,17 @@ def build_hybrid_subplot_figure(
         gex_val = float(row["weighted_gex"])
         gamma_side = row["gamma_side"]
 
-        if gamma_side == "SUPPORT":
+        if "SUPPORT" in gamma_side:
             txt = "S"
             color = "#00E676"
-        elif gamma_side == "RESISTANCE":
+        elif "RESISTANCE" in gamma_side:
             txt = "R"
             color = "#FF5252"
         else:
             continue
 
         label_x = gex_val + (0.03 * max_abs_x if gex_val >= 0 else -0.03 * max_abs_x)
+
         fig.add_annotation(
             x=label_x,
             y=strike,
@@ -735,8 +615,6 @@ def build_hybrid_subplot_figure(
             showarrow=False,
             font=dict(color=color, size=11),
             bgcolor="rgba(0,0,0,0.25)",
-            xanchor="center",
-            yanchor="middle",
         )
 
     shared_yaxis = get_shared_yaxis_config(forced_y_range)
@@ -744,25 +622,10 @@ def build_hybrid_subplot_figure(
     fig.update_yaxes(shared_yaxis, row=1, col=1)
     fig.update_yaxes(shared_yaxis, row=1, col=2)
 
-    fig.update_xaxes(
-        title_text="Time",
-        rangebreaks=[dict(bounds=["sat", "mon"])],
-        rangeslider=dict(visible=False),
-        row=1,
-        col=1,
-    )
-    fig.update_xaxes(
-        title_text="Weighted GEX",
-        row=1,
-        col=2,
-    )
-
     fig.update_layout(
-        title=f"{ticker} - Hybrid View",
         template="plotly_dark",
         height=700,
         margin=dict(l=60, r=100, t=70, b=50),
-        showlegend=False,
     )
 
     return fig, curve
@@ -884,17 +747,36 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
 
     curve = curve.sort_values("strike").reset_index(drop=True)
 
-    def classify_gamma_side(weighted_gex):
+    current_spot = float(gamma["spot"])
+
+    # -----------------------------
+    # ✅ NEW GAMMA SIDE LOGIC
+    # -----------------------------
+    def classify_gamma_side(weighted_gex, strike, spot):
         if pd.isna(weighted_gex):
             return "OTHER"
-        val = float(weighted_gex)
-        if val > 0:
-            return "SUPPORT"
-        if val < 0:
-            return "RESISTANCE"
+
+        gex = float(weighted_gex)
+
+        if gex > 0:
+            return "SUPPORT" if strike < spot else "RESISTANCE"
+        elif gex < 0:
+            return (
+                "BREAKOUT-PRONE SUPPORT"
+                if strike < spot
+                else "BREAKOUT-PRONE RESISTANCE"
+            )
         return "OTHER"
 
-    curve["gamma_side"] = curve["weighted_gex"].apply(classify_gamma_side)
+    curve["gamma_side"] = curve.apply(
+        lambda row: classify_gamma_side(
+            row["weighted_gex"],
+            row["strike"],
+            current_spot
+        ),
+        axis=1
+    )
+
     curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
 
     colors = ["#00C853" if float(v) >= 0 else "#D50000" for v in curve["weighted_gex"]]
@@ -907,120 +789,12 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
             x=curve["weighted_gex"],
             orientation="h",
             marker_color=colors,
-            name="Weighted GEX",
         )
     )
 
-    gamma_key_local = gamma.get("gamma_key_local", gamma.get("key_level"))
-    gamma_key_global = gamma.get("gamma_key_global")
-    gamma_flip = gamma.get("gamma_flip")
-    current_spot = gamma.get("spot")
-
-    if gamma_key_local is not None:
-        fig.add_hline(
-            y=float(gamma_key_local),
-            line_width=2,
-            line_dash="dash",
-            line_color="#FFD54F",
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.98,
-            y=float(gamma_key_local),
-            text=f"Gamma Key Local {float(gamma_key_local):.2f}",
-            showarrow=False,
-            font=dict(color="#FFD54F"),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="right",
-            yanchor="bottom",
-            xshift=-4,
-        )
-
-    if gamma_key_global is not None:
-        fig.add_hline(
-            y=float(gamma_key_global),
-            line_width=2,
-            line_dash="dot",
-            line_color="#BA68C8",
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.98,
-            y=float(gamma_key_global),
-            text=f"Gamma Key Global {float(gamma_key_global):.2f}",
-            showarrow=False,
-            font=dict(color="#BA68C8"),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="right",
-            yanchor="top",
-            xshift=-4,
-        )
-
-    if oi_key_level is not None:
-        fig.add_hline(
-            y=float(oi_key_level),
-            line_width=2,
-            line_dash="dot",
-            line_color="#64B5F6",
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.02,
-            y=float(oi_key_level),
-            text=f"OI Key {float(oi_key_level):.2f}",
-            showarrow=False,
-            font=dict(color="#64B5F6"),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="left",
-            yanchor="bottom",
-            xshift=4,
-        )
-
-    if gamma_flip is not None:
-        fig.add_hline(
-            y=float(gamma_flip),
-            line_width=2,
-            line_dash="longdash",
-            line_color="#FF9800",
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.98,
-            y=float(gamma_flip),
-            text=f"Gamma Flip {float(gamma_flip):.2f}",
-            showarrow=False,
-            font=dict(color="#FF9800"),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="right",
-            yanchor="middle",
-            xshift=-4,
-        )
-
-    if current_spot is not None:
-        fig.add_hline(
-            y=float(current_spot),
-            line_width=2,
-            line_dash="solid",
-            line_color="#FFFFFF",
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.02,
-            y=float(current_spot),
-            text=f"Spot {float(current_spot):.2f}",
-            showarrow=False,
-            font=dict(color="#FFFFFF"),
-            bgcolor="rgba(0,0,0,0.45)",
-            xanchor="left",
-            yanchor="top",
-            xshift=4,
-        )
-
+    # -----------------------------
+    # ✅ CLEAN LABELS (S / R)
+    # -----------------------------
     max_abs_x = max(curve["abs_weighted_gex"].max(), 1.0)
 
     for _, row in curve.iterrows():
@@ -1028,16 +802,17 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
         gex_val = float(row["weighted_gex"])
         gamma_side = row["gamma_side"]
 
-        if gamma_side == "SUPPORT":
+        if "SUPPORT" in gamma_side:
             txt = "S"
             color = "#00E676"
-        elif gamma_side == "RESISTANCE":
+        elif "RESISTANCE" in gamma_side:
             txt = "R"
             color = "#FF5252"
         else:
             continue
 
         label_x = gex_val + (0.03 * max_abs_x if gex_val >= 0 else -0.03 * max_abs_x)
+
         fig.add_annotation(
             x=label_x,
             y=strike,
@@ -1045,23 +820,13 @@ def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
             showarrow=False,
             font=dict(color=color, size=12),
             bgcolor="rgba(0,0,0,0.35)",
-            xanchor="center",
-            yanchor="middle",
         )
 
-    shared_yaxis = get_shared_yaxis_config(forced_y_range)
-
     fig.update_layout(
-        title=f"{ticker} - GEX by Strike (Hybrid)",
-        xaxis_title="Weighted GEX",
-        yaxis_title="Price / Strike",
+        template="plotly_dark",
         height=650,
-        margin=dict(l=70, r=140, t=70, b=50),
-        showlegend=False,
-        yaxis=shared_yaxis,
     )
 
-    fig.update_traces(cliponaxis=False)
     return fig, curve
 
 
