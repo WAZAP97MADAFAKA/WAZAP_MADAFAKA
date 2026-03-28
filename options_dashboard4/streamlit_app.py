@@ -45,6 +45,7 @@ def cached_gamma(ticker, weights, max_distance, num_levels, fixed_spot=None):
         fixed_spot=fixed_spot,
     )
 
+
 @st.cache_data(ttl=60, show_spinner=False)
 def cached_intraday_history(ticker):
     return get_intraday_history_last_24h_extended(ticker)
@@ -98,6 +99,7 @@ def load_settings():
         "qqq_y2": float(saved.get("qqq_y2", 0.0)),
     }
 
+
 def calculate_regression_from_points(x1, x2, y1, y2):
     try:
         x1 = float(x1)
@@ -149,6 +151,7 @@ def calculate_futures_equivalent(ticker, x_value, settings_dict):
 
     return round(a + b * float(x_value), 2)
 
+
 def slice_history_last_hours(hist_df: pd.DataFrame, hours: int) -> pd.DataFrame:
     if hist_df.empty:
         return hist_df
@@ -191,270 +194,19 @@ def get_aligned_y_range(hist_df: pd.DataFrame, levels_df: pd.DataFrame, current_
     return [round(y_min - pad, 2), round(y_max + pad, 2)]
 
 
-def get_regime_label(spot, gamma_flip, regime):
-    if gamma_flip is None:
-        if regime == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
-            return "LONG GAMMA BIAS (NO LOCAL FLIP)", "#1E88E5", None
-        if regime == "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS":
-            return "SHORT GAMMA BIAS (NO LOCAL FLIP)", "#8E24AA", None
-        return "NO FLIP DETECTED", "#9E9E9E", None
+def get_shared_yaxis_config(forced_y_range):
+    if forced_y_range is None:
+        return {}
 
-    distance_pct = abs(spot - gamma_flip) / spot * 100
+    y_min, y_max = forced_y_range
+    return {
+        "range": forced_y_range,
+        "tickmode": "linear",
+        "tick0": int(y_min // 5) * 5,
+        "dtick": 5,
+        "fixedrange": True,
+    }
 
-    if distance_pct < 0.5:
-        return "CHOP / TRANSITION", "#FFA726", distance_pct
-    if distance_pct < 1.5:
-        if spot > gamma_flip:
-            return "MODERATE BULLISH", "#66BB6A", distance_pct
-        return "MODERATE BEARISH", "#EF5350", distance_pct
-    if spot > gamma_flip:
-        return "STRONG BULLISH", "#00C853", distance_pct
-    return "STRONG BEARISH", "#D50000", distance_pct
-
-
-def get_gamma_mode_label(spot, gamma_flip, regime):
-    if gamma_flip is None:
-        if regime == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
-            return "LONG GAMMA PROXY MODE → FADE MOVES / BUY DIPS / SELL RIPS", "#1E88E5"
-        if regime == "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS":
-            return "SHORT GAMMA PROXY MODE → FOLLOW MOMENTUM / BUY BREAKOUTS / SELL BREAKDOWNS", "#8E24AA"
-        return "NO NEARBY FLIP → FOLLOW OVERALL BIAS", "#757575"
-
-    if spot > gamma_flip:
-        return "LONG GAMMA MODE → FADE MOVES / BUY DIPS / SELL RIPS", "#1E88E5"
-    if spot < gamma_flip:
-        return "SHORT GAMMA MODE → FOLLOW MOMENTUM / BUY BREAKOUTS / SELL BREAKDOWNS", "#8E24AA"
-    return "AT FLIP → TRANSITION / REDUCE SIZE", "#FB8C00"
-
-
-def render_oi_section(payload):
-    st.subheader("Static OI Map")
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("OI Fixed Spot", round(float(payload.get("oi_fixed_spot", 0.0)), 2))
-    c2.metric("OI Key Level", payload.get("key_level", "N/A"))
-    c3.metric("OI Last Refresh (NY)", payload.get("refreshed_at_ny", "N/A"))
-
-    if payload.get("refresh_mode"):
-        st.write(f"**OI Refresh Mode:** {payload.get('refresh_mode')}")
-
-    res = pd.DataFrame(payload.get("top_resistances", []))
-    sup = pd.DataFrame(payload.get("top_supports", []))
-
-    left, right = st.columns(2)
-    with left:
-        st.write("### OI Resistances")
-        st.dataframe(res, use_container_width=True, hide_index=True)
-    with right:
-        st.write("### OI Supports")
-        st.dataframe(sup, use_container_width=True, hide_index=True)
-
-
-def render_gamma_section(gamma):
-    st.subheader("Dynamic Gamma + VEX Map")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Current Spot", gamma.get("spot", "N/A"))
-    c2.metric("Gamma Flip", gamma.get("gamma_flip", "None"))
-    c3.metric("Gamma Key Level", gamma.get("key_level", "N/A"))
-    c4.metric("Regime", gamma.get("regime", "N/A"))
-
-    regime_label, regime_color, distance_pct = get_regime_label(
-        gamma.get("spot"),
-        gamma.get("gamma_flip"),
-        gamma.get("regime"),
-    )
-    gamma_mode_label, gamma_mode_color = get_gamma_mode_label(
-        gamma.get("spot"),
-        gamma.get("gamma_flip"),
-        gamma.get("regime"),
-    )
-
-    st.markdown(
-        f"""
-        <div style="
-            background-color:{regime_color};
-            padding:12px;
-            border-radius:10px;
-            color:white;
-            font-weight:bold;
-            font-size:22px;
-            text-align:center;">
-            REGIME STRENGTH: {regime_label}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        f"""
-        <div style="
-            background-color:{gamma_mode_color};
-            padding:12px;
-            border-radius:10px;
-            color:white;
-            font-weight:bold;
-            font-size:18px;
-            text-align:center;
-            margin-top:8px;">
-            GAMMA MODE: {gamma_mode_label}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if distance_pct is not None:
-        st.write(f"**Distance from Flip:** {distance_pct:.2f}%")
-
-    st.write(f"**Net Weighted GEX:** {gamma.get('total_net_gex', 0):,.0f}")
-    st.write(f"**Flip Source:** {gamma.get('flip_source', 'unknown')}")
-
-    left, right = st.columns(2)
-    with left:
-        st.write("### Gamma Resistances")
-        st.dataframe(
-            pd.DataFrame(gamma.get("top_resistances", [])),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.write("### VEX Resistances")
-        st.dataframe(
-            pd.DataFrame(gamma.get("top_vex_resistances", [])),
-            use_container_width=True,
-            hide_index=True,
-        )
-    with right:
-        st.write("### Gamma Supports")
-        st.dataframe(
-            pd.DataFrame(gamma.get("top_supports", [])),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.write("### VEX Supports")
-        st.dataframe(
-            pd.DataFrame(gamma.get("top_vex_supports", [])),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-
-def render_confluence_section(confluence):
-    st.subheader("Confluence Engine")
-
-    levels = confluence.get("levels", pd.DataFrame())
-    if isinstance(levels, list):
-        levels = pd.DataFrame(levels)
-
-    if levels.empty:
-        st.warning("No confluence levels found.")
-        return
-
-    st.write("### Decision Table")
-
-    cols = [
-        "side",
-        "level",
-        "level_gex",
-        "level_vex",
-        "vex_strength",
-        "gamma_strength",
-        "market_behavior",
-        "best_trade_type",
-        "direction",
-        "static_score",
-        "static_grade",
-        "dynamic_score",
-        "grade",
-        "confidence",
-        "hold_break_bias",
-        "trade_now_signal",
-        "bounce_probability",
-        "breakout_probability",
-        "entry",
-        "stop",
-        "target",
-        "distance_to_spot",
-    ]
-    cols = [c for c in cols if c in levels.columns]
-
-    st.dataframe(levels[cols], use_container_width=True, hide_index=True)
-
-    if "trade_now_signal" in levels.columns:
-        active = levels[levels["trade_now_signal"] == "TRADE NOW"]
-        if not active.empty:
-            st.success("TRADE NOW setups detected")
-            st.dataframe(active[cols], use_container_width=True, hide_index=True)
-
-        watch = levels[levels["trade_now_signal"] == "WATCH"]
-        if not watch.empty:
-            st.info("WATCH setups detected")
-            st.dataframe(watch[cols], use_container_width=True, hide_index=True)
-
-    st.write("### When to Skip a Trade")
-    for rule in confluence.get("skip_rules", []):
-        st.write(f"- {rule}")
-
-
-def get_chart_outcome_label(row):
-    bias = str(row.get("hold_break_bias", ""))
-
-    if bias == "LIKELY TO HOLD":
-        return "BOUNCE"
-    if bias == "CAN HOLD, BUT MESSY":
-        return "MESSY BOUNCE"
-    if bias == "LIKELY TO BREAK":
-        return "BREAKTHROUGH"
-    return "NEUTRAL"
-
-
-def add_session_backgrounds(fig, hist_df):
-    if hist_df.empty:
-        return fig
-
-    x_min = hist_df["datetime"].min()
-    x_max = hist_df["datetime"].max()
-
-    start_day = x_min.normalize()
-    end_day = x_max.normalize()
-
-    current_day = start_day
-    while current_day <= end_day:
-        if current_day.weekday() < 5:
-            overnight_start = current_day
-            overnight_end = current_day + timedelta(hours=4)
-
-            premarket_start = current_day + timedelta(hours=4)
-            premarket_end = current_day + timedelta(hours=9, minutes=30)
-
-            aftermarket_start = current_day + timedelta(hours=16)
-            aftermarket_end = current_day + timedelta(hours=20)
-
-            overnight2_start = current_day + timedelta(hours=20)
-            overnight2_end = current_day + timedelta(days=1)
-
-            windows = [
-                (overnight_start, overnight_end, "rgba(80, 80, 120, 0.12)"),
-                (premarket_start, premarket_end, "rgba(70, 120, 180, 0.12)"),
-                (aftermarket_start, aftermarket_end, "rgba(150, 90, 170, 0.12)"),
-                (overnight2_start, overnight2_end, "rgba(80, 80, 120, 0.12)"),
-            ]
-
-            for x0, x1, color in windows:
-                left = max(x0, x_min)
-                right = min(x1, x_max)
-                if left < right:
-                    fig.add_vrect(
-                        x0=left,
-                        x1=right,
-                        fillcolor=color,
-                        opacity=1,
-                        line_width=0,
-                        layer="below",
-                    )
-
-        current_day += timedelta(days=1)
-
-    return fig
 
 def build_hybrid_subplot_figure(
     ticker,
@@ -787,558 +539,6 @@ def build_hybrid_subplot_figure(
     )
 
     return fig, curve
-
-def get_shared_yaxis_config(forced_y_range):
-    if forced_y_range is None:
-        return {}
-
-    y_min, y_max = forced_y_range
-    return {
-        "range": forced_y_range,
-        "tickmode": "linear",
-        "tick0": int(y_min // 5) * 5,
-        "dtick": 5,
-        "fixedrange": True,
-    }
-
-def get_shared_yaxis_config(forced_y_range):
-    if forced_y_range is None:
-        return {}
-
-    y_min, y_max = forced_y_range
-
-    # Use 5-point spacing so OI lines and strike bars line up visually
-    return {
-        "range": forced_y_range,
-        "tickmode": "linear",
-        "tick0": int(y_min // 5) * 5,
-        "dtick": 5,
-        "fixedrange": True,
-    }
-
-def build_chart_for_ticker(
-    ticker,
-    hist_df,
-    levels_df,
-    current_spot,
-    forced_y_range=None,
-    title_suffix="Last 24h (Premarket + Market + Aftermarket + Overnight)",
-):
-    fig = go.Figure()
-
-    fig.add_trace(
-        go.Scatter(
-            x=hist_df["datetime"],
-            y=hist_df["close"],
-            mode="lines",
-            name=f"{ticker} Price",
-        )
-    )
-
-    fig = add_session_backgrounds(fig, hist_df)
-
-    for _, row in levels_df.iterrows():
-        level = float(row["level"])
-        side = str(row.get("side", ""))
-        direction = str(row.get("direction", "SKIP"))
-        gex = row.get("level_gex", 0)
-        vex = row.get("level_vex", 0)
-        dynamic_score = row.get("dynamic_score", 0)
-        static_score = row.get("static_score", 0)
-        signal = row.get("trade_now_signal", "PLAN")
-        behavior = row.get("market_behavior", "")
-        outcome = get_chart_outcome_label(row)
-
-        line_color = "#00C853" if side == "SUPPORT" else "#D50000"
-        dash = "solid" if side == "SUPPORT" else "dot"
-
-        label_text = (
-            f"{level:.2f} | Static {static_score} | Dynamic {dynamic_score} | "
-            f"{behavior} | {signal} | GEX {gex:,.0f} | VEX {vex:,.0f} | "
-            f"{outcome} | {direction}"
-        )
-
-        fig.add_hline(
-            y=level,
-            line_color=line_color,
-            line_width=1.5,
-            line_dash=dash,
-            annotation_text=label_text,
-            annotation_position="right",
-        )
-
-    fig.add_hline(
-        y=float(current_spot),
-        line_color="#1E88E5",
-        line_width=1,
-        line_dash="dash",
-        annotation_text=f"Spot {current_spot:.2f}",
-        annotation_position="left",
-    )
-
-    shared_yaxis = get_shared_yaxis_config(forced_y_range)
-
-    fig.update_layout(
-        title=f"{ticker} - {title_suffix}",
-        xaxis_title="Time",
-        yaxis_title="Price / Strike",
-        height=650,
-        legend_title="Series",
-        margin=dict(l=70, r=70, t=70, b=50),
-        xaxis=dict(
-            rangebreaks=[dict(bounds=["sat", "mon"])],
-            rangeslider=dict(visible=False),
-        ),
-        yaxis=shared_yaxis,
-    )
-
-    return fig
-
-
-def build_hybrid_gex_chart(ticker, gamma, oi_key_level, forced_y_range=None):
-    curve = pd.DataFrame(gamma.get("gex_curve", []))
-    if curve.empty:
-        curve = pd.DataFrame(gamma.get("gex_curve_wide", []))
-
-    if curve.empty:
-        return None, pd.DataFrame()
-
-    curve = curve.sort_values("strike").reset_index(drop=True)
-    current_spot = float(gamma["spot"])
-
-    def classify_gamma_side(weighted_gex, strike, spot):
-        if pd.isna(weighted_gex) or pd.isna(strike) or pd.isna(spot):
-            return "OTHER"
-
-        gex = float(weighted_gex)
-        strike = float(strike)
-        spot = float(spot)
-
-        if gex > 0:
-            if strike < spot:
-                return "SUPPORT"
-            elif strike > spot:
-                return "RESISTANCE"
-            return "SUPPORT"
-
-        if gex < 0:
-            if strike < spot:
-                return "BREAKOUT-PRONE SUPPORT"
-            elif strike > spot:
-                return "BREAKOUT-PRONE RESISTANCE"
-            return "BREAKOUT-PRONE"
-
-        return "OTHER"
-
-    curve["gamma_side"] = curve.apply(
-        lambda row: classify_gamma_side(
-            row["weighted_gex"],
-            row["strike"],
-            current_spot,
-        ),
-        axis=1,
-    )
-    curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
-
-    colors = ["#00C853" if float(v) >= 0 else "#D50000" for v in curve["weighted_gex"]]
-
-    fig = go.Figure()
-
-    fig.add_trace(
-        go.Bar(
-            y=curve["strike"],
-            x=curve["weighted_gex"],
-            orientation="h",
-            marker_color=colors,
-            name="Weighted GEX",
-        )
-    )
-
-    gamma_key_local = gamma.get("gamma_key_local", gamma.get("key_level"))
-    gamma_key_global = gamma.get("gamma_key_global")
-    gamma_flip = gamma.get("gamma_flip")
-    current_spot = gamma.get("spot")
-
-    if gamma_key_local is not None:
-        fig.add_hline(
-            y=float(gamma_key_local),
-            line_width=2,
-            line_dash="dash",
-            line_color="#FFD54F",
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.98,
-            y=float(gamma_key_local),
-            text=f"Gamma Key Local {float(gamma_key_local):.2f}",
-            showarrow=False,
-            font=dict(color="#FFD54F"),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="right",
-            yanchor="bottom",
-            xshift=-4,
-        )
-
-    if gamma_key_global is not None:
-        fig.add_hline(
-            y=float(gamma_key_global),
-            line_width=2,
-            line_dash="dot",
-            line_color="#BA68C8",
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.98,
-            y=float(gamma_key_global),
-            text=f"Gamma Key Global {float(gamma_key_global):.2f}",
-            showarrow=False,
-            font=dict(color="#BA68C8"),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="right",
-            yanchor="top",
-            xshift=-4,
-        )
-
-    if oi_key_level is not None:
-        fig.add_hline(
-            y=float(oi_key_level),
-            line_width=2,
-            line_dash="dot",
-            line_color="#64B5F6",
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.02,
-            y=float(oi_key_level),
-            text=f"OI Key {float(oi_key_level):.2f}",
-            showarrow=False,
-            font=dict(color="#64B5F6"),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="left",
-            yanchor="bottom",
-            xshift=4,
-        )
-
-    if gamma_flip is not None:
-        fig.add_hline(
-            y=float(gamma_flip),
-            line_width=2,
-            line_dash="longdash",
-            line_color="#FF9800",
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.98,
-            y=float(gamma_flip),
-            text=f"Gamma Flip {float(gamma_flip):.2f}",
-            showarrow=False,
-            font=dict(color="#FF9800"),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="right",
-            yanchor="middle",
-            xshift=-4,
-        )
-
-    if current_spot is not None:
-        fig.add_hline(
-            y=float(current_spot),
-            line_width=2,
-            line_dash="solid",
-            line_color="#FFFFFF",
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.02,
-            y=float(current_spot),
-            text=f"Spot {float(current_spot):.2f}",
-            showarrow=False,
-            font=dict(color="#FFFFFF"),
-            bgcolor="rgba(0,0,0,0.45)",
-            xanchor="left",
-            yanchor="top",
-            xshift=4,
-        )
-
-    max_abs_x = max(curve["abs_weighted_gex"].max(), 1.0)
-
-    for _, row in curve.iterrows():
-        strike = float(row["strike"])
-        gex_val = float(row["weighted_gex"])
-        gamma_side = str(row["gamma_side"])
-
-        if "SUPPORT" in gamma_side:
-            txt = "S"
-            color = "#00E676"
-        elif "RESISTANCE" in gamma_side:
-            txt = "R"
-            color = "#FF5252"
-        else:
-            continue
-
-        label_x = gex_val + (0.03 * max_abs_x if gex_val >= 0 else -0.03 * max_abs_x)
-        fig.add_annotation(
-            x=label_x,
-            y=strike,
-            text=txt,
-            showarrow=False,
-            font=dict(color=color, size=12),
-            bgcolor="rgba(0,0,0,0.35)",
-            xanchor="center",
-            yanchor="middle",
-        )
-
-    shared_yaxis = get_shared_yaxis_config(forced_y_range)
-
-    fig.update_layout(
-        title=f"{ticker} - GEX by Strike (Hybrid)",
-        xaxis_title="Weighted GEX",
-        yaxis_title="Price / Strike",
-        height=650,
-        margin=dict(l=70, r=140, t=70, b=50),
-        showlegend=False,
-        yaxis=shared_yaxis,
-    )
-
-    fig.update_traces(cliponaxis=False)
-    return fig, curve
-
-
-def classify_consistent_trade_logic(oi_side, gamma_side, agreement, weighted_gex, weighted_vex):
-    oi_side = str(oi_side or "OTHER")
-    gamma_side = str(gamma_side or "OTHER")
-    agreement = str(agreement or "OTHER")
-
-    gex_val = 0.0 if pd.isna(weighted_gex) else float(weighted_gex)
-    vex_val = 0.0 if pd.isna(weighted_vex) else float(weighted_vex)
-
-    abs_vex = abs(vex_val)
-
-    if abs_vex >= 25000:
-        vex_strength = "HIGH"
-    elif abs_vex >= 8000:
-        vex_strength = "MEDIUM"
-    elif abs_vex > 0:
-        vex_strength = "LOW"
-    else:
-        vex_strength = "LOW"
-
-    # -----------------------------
-    # 1) Market behavior
-    # -----------------------------
-    if agreement == "ALIGNED":
-        if vex_strength == "LOW":
-            market_behavior = "CLEAN"
-        elif vex_strength == "MEDIUM":
-            market_behavior = "CONTROLLED"
-        else:
-            market_behavior = "FAST"
-    elif agreement == "FLIP":
-        if vex_strength == "HIGH":
-            market_behavior = "EXPLOSIVE"
-        elif vex_strength == "MEDIUM":
-            market_behavior = "UNSTABLE"
-        else:
-            market_behavior = "CHOP"
-    elif agreement == "GAMMA_ONLY":
-        if vex_strength == "HIGH":
-            market_behavior = "FAST"
-        elif vex_strength == "MEDIUM":
-            market_behavior = "CONTROLLED"
-        else:
-            market_behavior = "CLEAN"
-    else:
-        market_behavior = "CHOP"
-
-    # -----------------------------
-    # 2) Trade type + direction
-    # -----------------------------
-    best_trade_type = "SKIP"
-    direction = "SKIP"
-
-    # ALIGNED = bounce/scalp in direction of side
-    if agreement == "ALIGNED":
-        if gamma_side == "SUPPORT":
-            direction = "LONG"
-            if vex_strength == "LOW":
-                best_trade_type = "BOUNCE"
-            elif vex_strength == "MEDIUM":
-                best_trade_type = "BOUNCE"
-            else:
-                best_trade_type = "SCALP"
-
-        elif gamma_side == "RESISTANCE":
-            direction = "SHORT"
-            if vex_strength == "LOW":
-                best_trade_type = "BOUNCE"
-            elif vex_strength == "MEDIUM":
-                best_trade_type = "BOUNCE"
-            else:
-                best_trade_type = "SCALP"
-
-    # FLIP = breakout/breakdown if VEX is high enough; otherwise skip
-    elif agreement == "FLIP":
-        if vex_strength == "HIGH":
-            if gamma_side == "SUPPORT":
-                direction = "LONG"
-                best_trade_type = "BREAKOUT"
-            elif gamma_side == "RESISTANCE":
-                direction = "SHORT"
-                best_trade_type = "BREAKDOWN"
-        elif vex_strength == "MEDIUM":
-            if gamma_side == "SUPPORT":
-                direction = "LONG"
-                best_trade_type = "WATCH_BREAKOUT"
-            elif gamma_side == "RESISTANCE":
-                direction = "SHORT"
-                best_trade_type = "WATCH_BREAKDOWN"
-        else:
-            direction = "SKIP"
-            best_trade_type = "SKIP"
-
-    # GAMMA_ONLY = follow gamma, but less confidence
-    elif agreement == "GAMMA_ONLY":
-        if gamma_side == "SUPPORT":
-            direction = "LONG"
-            best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
-        elif gamma_side == "RESISTANCE":
-            direction = "SHORT"
-            best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
-
-    # OTHER = skip
-    else:
-        direction = "SKIP"
-        best_trade_type = "SKIP"
-
-    # -----------------------------
-    # 3) Final trade decision text
-    # -----------------------------
-    if best_trade_type == "SKIP" or direction == "SKIP":
-        trade_decision = "SKIP"
-    elif best_trade_type in ["WATCH_BREAKOUT", "WATCH_BREAKDOWN"]:
-        trade_decision = best_trade_type
-    else:
-        trade_decision = f"{best_trade_type} {direction}"
-
-    return {
-        "vex_strength": vex_strength,
-        "market_behavior": market_behavior,
-        "best_trade_type": best_trade_type,
-        "direction": direction,
-        "trade_decision": trade_decision,
-    }
-
-
-def classify_consistent_trade_logic(oi_side, gamma_side, agreement, weighted_gex, weighted_vex):
-    oi_side = str(oi_side or "OTHER")
-    gamma_side = str(gamma_side or "OTHER")
-    agreement = str(agreement or "OTHER")
-
-    gex_val = 0.0 if pd.isna(weighted_gex) else float(weighted_gex)
-    vex_val = 0.0 if pd.isna(weighted_vex) else float(weighted_vex)
-
-    abs_vex = abs(vex_val)
-
-    if abs_vex >= 25000:
-        vex_strength = "HIGH"
-    elif abs_vex >= 8000:
-        vex_strength = "MEDIUM"
-    elif abs_vex > 0:
-        vex_strength = "LOW"
-    else:
-        vex_strength = "LOW"
-
-    if agreement == "ALIGNED":
-        if vex_strength == "LOW":
-            market_behavior = "CLEAN"
-        elif vex_strength == "MEDIUM":
-            market_behavior = "CONTROLLED"
-        else:
-            market_behavior = "FAST"
-    elif agreement == "FLIP":
-        if vex_strength == "HIGH":
-            market_behavior = "EXPLOSIVE"
-        elif vex_strength == "MEDIUM":
-            market_behavior = "UNSTABLE"
-        else:
-            market_behavior = "CHOP"
-    elif agreement == "GAMMA_ONLY":
-        if vex_strength == "HIGH":
-            market_behavior = "FAST"
-        elif vex_strength == "MEDIUM":
-            market_behavior = "CONTROLLED"
-        else:
-            market_behavior = "CLEAN"
-    else:
-        market_behavior = "CHOP"
-
-    best_trade_type = "SKIP"
-    direction = "SKIP"
-
-    if agreement == "ALIGNED":
-        if gamma_side == "SUPPORT":
-            direction = "LONG"
-            if vex_strength == "HIGH":
-                best_trade_type = "SCALP"
-            else:
-                best_trade_type = "BOUNCE"
-
-        elif gamma_side == "RESISTANCE":
-            direction = "SHORT"
-            if vex_strength == "HIGH":
-                best_trade_type = "SCALP"
-            else:
-                best_trade_type = "BOUNCE"
-
-    elif agreement == "FLIP":
-        if vex_strength == "HIGH":
-            if gamma_side == "SUPPORT":
-                direction = "LONG"
-                best_trade_type = "BREAKOUT"
-            elif gamma_side == "RESISTANCE":
-                direction = "SHORT"
-                best_trade_type = "BREAKDOWN"
-        elif vex_strength == "MEDIUM":
-            if gamma_side == "SUPPORT":
-                direction = "LONG"
-                best_trade_type = "WATCH_BREAKOUT"
-            elif gamma_side == "RESISTANCE":
-                direction = "SHORT"
-                best_trade_type = "WATCH_BREAKDOWN"
-        else:
-            direction = "SKIP"
-            best_trade_type = "SKIP"
-
-    elif agreement == "GAMMA_ONLY":
-        if gamma_side == "SUPPORT":
-            direction = "LONG"
-            best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
-        elif gamma_side == "RESISTANCE":
-            direction = "SHORT"
-            best_trade_type = "SCALP" if vex_strength == "HIGH" else "BOUNCE"
-
-    else:
-        direction = "SKIP"
-        best_trade_type = "SKIP"
-
-    if best_trade_type == "SKIP" or direction == "SKIP":
-        trade_decision = "SKIP"
-    elif best_trade_type in ["WATCH_BREAKOUT", "WATCH_BREAKDOWN"]:
-        trade_decision = best_trade_type
-    else:
-        trade_decision = f"{best_trade_type} {direction}"
-
-    return {
-        "vex_strength": vex_strength,
-        "market_behavior": market_behavior,
-        "best_trade_type": best_trade_type,
-        "direction": direction,
-        "trade_decision": trade_decision,
-    }
 
 
 def enrich_gex_table(
@@ -2048,6 +1248,326 @@ def enrich_gex_table(
     return enriched_df
 
 
+def render_hybrid_gex_table(enriched_df: pd.DataFrame, ticker: str):
+    if enriched_df.empty:
+        st.warning("No strongest GEX table data available.")
+        return
+
+    def highlight_rows(row):
+        if row.get("highlight_flag") == "SPOT":
+            return ["background-color: rgba(100, 181, 246, 0.25)"] * len(row)
+        if row.get("highlight_flag") == "HOT":
+            return ["background-color: rgba(255, 215, 64, 0.25)"] * len(row)
+        if row.get("auto_flag") in ["A_PLUS_SUPPORT", "A_PLUS_RESISTANCE"]:
+            return ["background-color: rgba(102, 187, 106, 0.20)"] * len(row)
+        if row.get("auto_flag") in ["TRAP_UP", "TRAP_DOWN", "BREAKOUT_READY", "BREAKDOWN_READY"]:
+            return ["background-color: rgba(255, 138, 101, 0.20)"] * len(row)
+        if row.get("auto_flag") in ["PRE_BREAKOUT", "PRE_BREAKDOWN"]:
+            return ["background-color: rgba(255, 235, 59, 0.18)"] * len(row)
+        if row.get("breakout_risk") == "HIGH":
+            return ["background-color: rgba(255, 87, 34, 0.12)"] * len(row)
+        return [""] * len(row)
+
+    futures_col_name = get_futures_equivalent_label(ticker)
+    display_df = enriched_df.copy()
+
+    if "Futures Equivalent" in display_df.columns:
+        display_df[futures_col_name] = display_df["Futures Equivalent"]
+        display_df = display_df.drop(columns=["Futures Equivalent"])
+
+    if "decision_reason" in display_df.columns:
+        display_df["decision_reason"] = display_df["decision_reason"].fillna("").astype(str)
+
+    if "key_interaction" in display_df.columns:
+        display_df["key_interaction"] = display_df["key_interaction"].fillna("").astype(str)
+
+    display_cols = [
+        "strike",
+        futures_col_name,
+        "oi_side",
+        "gamma_side",
+        "agreement",
+        "gamma_regime",
+        "key_interaction",
+        "trigger_state",
+        "breakout_risk",
+        "trade_score",
+        "weighted_gex",
+        "weighted_vex",
+        "vex_strength",
+        "market_behavior",
+        "best_trade_type",
+        "direction",
+        "trade_decision",
+        "auto_flag",
+        "Entry-Stop-Target",
+        "decision_reason",
+    ]
+    display_cols = [c for c in display_cols if c in display_df.columns]
+
+    styled_df = (
+        display_df[display_cols + ["highlight_flag"]]
+        .style
+        .apply(highlight_rows, axis=1)
+        .hide(axis="index")
+        .hide(axis="columns", subset=["highlight_flag"])
+    )
+
+    st.dataframe(
+        styled_df,
+        use_container_width=True,
+    )
+
+
+def render_hybrid_scenarios_summary(enriched_df: pd.DataFrame):
+    if enriched_df.empty:
+        return
+
+    st.write("### Scenario Guide")
+
+    scenarios = [
+        ("A_PLUS_SUPPORT", "Strongest long bounce zone. Gamma Key and OI Key align at support."),
+        ("A_PLUS_RESISTANCE", "Strongest short rejection zone. Gamma Key and OI Key align at resistance."),
+        ("SCALP_ONLY", "Spot is near Gamma Key. Expect pinning/chop. Prefer quick scalps only."),
+        ("PRE_BREAKOUT", "OI says resistance but gamma supports the level. Breakout may be building, but price has not confirmed it yet."),
+        ("PRE_BREAKDOWN", "OI says support but gamma resists the level. Breakdown may be building, but price has not confirmed it yet."),
+        ("TRAP_UP", "Breakout is confirmed through a conflict level. Upside squeeze / expansion is active."),
+        ("TRAP_DOWN", "Breakdown is confirmed through a conflict level. Downside expansion is active."),
+        ("WATCH_UP", "Conflict level with some energy. Watch for upside resolution."),
+        ("WATCH_DOWN", "Conflict level with some energy. Watch for downside resolution."),
+        ("BOUNCE_LONG", "Aligned support. Clean long bounce setup."),
+        ("BOUNCE_SHORT", "Aligned resistance. Clean short bounce setup."),
+        ("FAST_LONG", "Aligned support with high VEX. Favor fast long scalps, not long holds."),
+        ("FAST_SHORT", "Aligned resistance with high VEX. Favor fast short scalps, not long holds."),
+        ("GAMMA_ONLY_LONG", "Only gamma supports the level. Lower-confidence long."),
+        ("GAMMA_ONLY_SHORT", "Only gamma resists the level. Lower-confidence short."),
+        ("CHOP_SKIP", "Conflict with low VEX. Messy tape. Best to skip."),
+        ("TRANSITION_SKIP", "Near Gamma Flip without enough VEX. Transition zone, avoid forcing trades."),
+    ]
+
+    seen_flags = set(enriched_df["auto_flag"].dropna().astype(str).tolist())
+
+    for flag, text in scenarios:
+        if flag in seen_flags:
+            st.write(f"**{flag}:** {text}")
+
+    if "breakout_risk" in enriched_df.columns:
+        if (enriched_df["breakout_risk"] == "HIGH").any():
+            st.write("**HIGH breakout risk:** Short-gamma conditions can overwhelm even aligned support/resistance levels.")
+        elif (enriched_df["breakout_risk"] == "MEDIUM").any():
+            st.write("**MEDIUM breakout risk:** Structure still matters, but short-gamma conditions raise failure risk.")
+
+
+def classify_price_position_from_keys(spot_price, oi_key_level, gamma_key_global, ticker):
+    if oi_key_level is None or gamma_key_global is None:
+        return None
+
+    spot = float(spot_price)
+    oi_key = float(oi_key_level)
+    gamma_key = float(gamma_key_global)
+
+    lower_key = min(oi_key, gamma_key)
+    upper_key = max(oi_key, gamma_key)
+
+    threshold = 0.5 if ticker == "SPY" else 1.0
+
+    if spot < lower_key - threshold:
+        return -1
+    if spot > upper_key + threshold:
+        return 1
+    return 0
+
+
+def classify_key_positioning_code(oi_key_level, gamma_key_global):
+    if oi_key_level is None or gamma_key_global is None:
+        return None
+
+    oi_key = float(oi_key_level)
+    gamma_key = float(gamma_key_global)
+
+    if oi_key < gamma_key:
+        return -1
+    if oi_key > gamma_key:
+        return 1
+    return 0
+
+
+def classify_key_vs_flip_code(key_level, gamma_flip, ticker):
+    if key_level is None or gamma_flip is None:
+        return None
+
+    key_val = float(key_level)
+    flip_val = float(gamma_flip)
+    threshold = 0.25 if ticker == "SPY" else 0.5
+
+    if key_val > flip_val + threshold:
+        return -1
+    if key_val < flip_val - threshold:
+        return 1
+    return 0
+
+
+def classify_gamma_regime_code(spot_price, gamma_flip):
+    if gamma_flip is None:
+        return None
+
+    spot = float(spot_price)
+    flip_val = float(gamma_flip)
+
+    if spot > flip_val:
+        return -1
+    if spot < flip_val:
+        return 1
+    return 0
+
+
+def get_five_factor_scenario(
+    spot_price,
+    oi_key_level,
+    gamma_key_global,
+    gamma_flip,
+    ticker,
+):
+    gamma_regime_code = classify_gamma_regime_code(spot_price, gamma_flip)
+    price_position_code = classify_price_position_from_keys(
+        spot_price, oi_key_level, gamma_key_global, ticker
+    )
+    key_positioning_code = classify_key_positioning_code(
+        oi_key_level, gamma_key_global
+    )
+    oi_key_code = classify_key_vs_flip_code(oi_key_level, gamma_flip, ticker)
+    gamma_key_code = classify_key_vs_flip_code(gamma_key_global, gamma_flip, ticker)
+
+    if None in [
+        gamma_regime_code,
+        price_position_code,
+        key_positioning_code,
+        oi_key_code,
+        gamma_key_code,
+    ]:
+        return {
+            "gamma_regime_code": gamma_regime_code,
+            "price_position_code": price_position_code,
+            "key_positioning_code": key_positioning_code,
+            "oi_key_code": oi_key_code,
+            "gamma_key_code": gamma_key_code,
+            "read": "Incomplete Scenario",
+            "expected_response": "Gamma Flip, OI Key, or Gamma Key Global is missing, so the five-factor scenario cannot be fully classified.",
+            "profitability": None,
+        }
+
+    if gamma_regime_code == -1:
+        base = "Long gamma dominates, so price is more likely to pin, mean revert, and fade directional extensions."
+    else:
+        base = "Short gamma dominates, so price is more likely to expand, trend, and accelerate once a level fails or is accepted."
+
+    if price_position_code == -1:
+        price_txt = "Price is below the keys, so the market is testing lower structure first."
+    elif price_position_code == 0:
+        price_txt = "Price is between the keys, so the market is inside a range / transition area rather than at a clean edge."
+    else:
+        price_txt = "Price is above the keys, so the market is testing upper structure first."
+
+    if key_positioning_code == 0:
+        kp_txt = "OI Key and Gamma Key are aligned, which strengthens the level and makes the response cleaner."
+    elif key_positioning_code == -1:
+        kp_txt = "OI Key sits below Gamma Key, creating layered support underneath the gamma structure and a staggered reaction zone."
+    else:
+        kp_txt = "OI Key sits above Gamma Key, creating layered resistance above the gamma structure and a staggered reaction zone."
+
+    if oi_key_code == 0:
+        oi_txt = "The OI Key is sitting at the gamma flip, so it adds magnetism and transition behavior."
+    elif oi_key_code == -1:
+        oi_txt = "The OI Key is above the gamma flip, so it acts as an overhead structural level."
+    else:
+        oi_txt = "The OI Key is below the gamma flip, so it acts as an underlying structural level."
+
+    if gamma_key_code == 0:
+        gk_txt = "The Gamma Key Global is sitting at the gamma flip, so hedging pressure is concentrated at the main pivot."
+    elif gamma_key_code == -1:
+        gk_txt = "The Gamma Key Global is above the gamma flip, so the strongest hedging pressure is overhead."
+    else:
+        gk_txt = "The Gamma Key Global is below the gamma flip, so the strongest hedging pressure is underneath price."
+
+    if gamma_regime_code == -1 and price_position_code == -1 and key_positioning_code == 0 and oi_key_code == 1 and gamma_key_code == 1:
+        read = "A+ Long Bounce"
+        profitability = 10
+        combo = "This is one of the cleanest long-gamma buy-the-dip scenarios: both keys are below the flip, aligned with each other, and price is testing from above, so dips are more likely to hold and revert higher."
+    elif gamma_regime_code == -1 and price_position_code == 1 and key_positioning_code == 0 and oi_key_code == -1 and gamma_key_code == -1:
+        read = "A+ Long Fade"
+        profitability = 9
+        combo = "This is one of the cleanest long-gamma fade-the-rip scenarios: both keys are above the flip, aligned with each other, and price is testing into upper structure, so upside extensions are more likely to stall and mean revert."
+    elif gamma_regime_code == 1 and price_position_code == 1 and key_positioning_code == 0 and oi_key_code in (-1, 0) and gamma_key_code in (-1, 0):
+        read = "A+ Breakout"
+        profitability = 10 if (oi_key_code == -1 and gamma_key_code == -1) else 9
+        combo = "This is one of the strongest short-gamma breakout scenarios: price is pressing upper structure, keys are aligned, and at least one key is near or above the flip, so acceptance can trigger fast upside expansion."
+    elif gamma_regime_code == 1 and price_position_code == -1 and key_positioning_code == 0 and oi_key_code == 1 and gamma_key_code == 1:
+        read = "A+ Breakdown"
+        profitability = 10
+        combo = "This is one of the strongest short-gamma breakdown scenarios: price is testing lower structure, both keys sit below the flip, and aligned support can fail violently once accepted lower."
+    elif oi_key_code == 0 or gamma_key_code == 0:
+        read = "Flip Magnet / Pivot"
+        profitability = 4 if price_position_code == 0 else 6
+        combo = "Because at least one key sits at the gamma flip, the market is more likely to pin, rotate, and produce false starts in long gamma, or pivot violently in short gamma. Confirmation matters more than anticipation."
+    elif price_position_code == 0:
+        read = "Range / Transition"
+        profitability = 3 if gamma_regime_code == -1 else 5
+        combo = "Because price is between the keys, the market is inside a range / transition area. Directional edge is weaker here than when price is clearly pressing one side of the structure."
+    elif key_positioning_code == 0:
+        read = "Aligned Structure"
+        profitability = 8
+        combo = "The keys are aligned, which improves structure quality and makes reactions cleaner than split-key cases, but this is not as strong as the top A+ scenarios."
+    else:
+        read = "Mixed Structure"
+        profitability = 5
+        combo = "The structure is mixed rather than fully aligned. Expect more cross-currents, more trap potential, and lower clarity than the best scenarios."
+
+    expected_response = " ".join([base, price_txt, kp_txt, oi_txt, gk_txt, combo])
+
+    return {
+        "gamma_regime_code": gamma_regime_code,
+        "price_position_code": price_position_code,
+        "key_positioning_code": key_positioning_code,
+        "oi_key_code": oi_key_code,
+        "gamma_key_code": gamma_key_code,
+        "read": read,
+        "expected_response": expected_response,
+        "profitability": profitability,
+    }
+
+
+def render_expected_response_profitability(ticker, scenario):
+    st.write("### Expected Response & Profitability")
+
+    profitability = scenario.get("profitability")
+    read = scenario.get("read", "N/A")
+    expected_response = scenario.get("expected_response", "N/A")
+
+    c1, c2 = st.columns([1, 1])
+
+    with c1:
+        st.metric("Scenario", read)
+
+    with c2:
+        st.metric(
+            "Profitability (1-10)",
+            profitability if profitability is not None else "N/A"
+        )
+
+    st.info(expected_response)
+
+    with st.expander("5-Factor Scenario Codes"):
+        st.write(
+            {
+                "Gamma Regime": scenario.get("gamma_regime_code"),
+                "Price Position": scenario.get("price_position_code"),
+                "Key Positioning": scenario.get("key_positioning_code"),
+                "OI Key": scenario.get("oi_key_code"),
+                "Gamma Key Global": scenario.get("gamma_key_code"),
+            }
+        )
+
+
 settings = load_settings()
 
 st.sidebar.header("Settings")
@@ -2145,8 +1665,6 @@ status = load_json(REFRESH_STATUS_FILE, {})
 st.sidebar.write("### Last OI Refresh")
 st.sidebar.write(status.get("last_refresh_ny", "No refresh yet"))
 
-tab1, tab2, tab3 = st.tabs(["Dashboard", "Charts", "Hybrid View"])
-
 ticker_data = {}
 
 for ticker in (tickers or DEFAULT_TICKERS):
@@ -2187,197 +1705,15 @@ for ticker in (tickers or DEFAULT_TICKERS):
     except Exception as e:
         ticker_data[ticker] = {"error": str(e)}
 
+tab1 = st.tabs(["Hybrid View"])[0]
+
 with tab1:
-    for ticker in (tickers or DEFAULT_TICKERS):
-        st.header(ticker)
-        data = ticker_data.get(ticker, {})
-        if "error" in data:
-            st.error(f"{ticker}: {data['error']}")
-            st.divider()
-            continue
-
-        render_oi_section(data["oi_payload"])
-        render_gamma_section(data["gamma"])
-        render_confluence_section(data["confluence"])
-        st.divider()
-
-with tab2:
-    st.write("Charts show the last 24 hours with different background colors for premarket, aftermarket, and overnight. Saturdays and Sundays are removed from the x-axis.")
-
-    for ticker in (tickers or DEFAULT_TICKERS):
-        st.header(f"{ticker} Chart")
-        data = ticker_data.get(ticker, {})
-        if "error" in data:
-            st.error(f"{ticker}: {data['error']}")
-            st.divider()
-            continue
-
-        try:
-            hist = cached_intraday_history(ticker)
-            levels_df = data["confluence"]["levels"].copy()
-
-            cols = [
-                "side",
-                "level",
-                "level_gex",
-                "level_vex",
-                "vex_strength",
-                "gamma_strength",
-                "market_behavior",
-                "best_trade_type",
-                "direction",
-                "static_score",
-                "static_grade",
-                "dynamic_score",
-                "grade",
-                "trade_now_signal",
-                "bounce_probability",
-                "breakout_probability",
-                "entry",
-                "stop",
-                "target",
-            ]
-            cols = [c for c in cols if c in levels_df.columns]
-
-            fig = build_chart_for_ticker(
-                ticker=ticker,
-                hist_df=hist,
-                levels_df=levels_df,
-                current_spot=float(data["gamma"]["spot"]),
-            )
-            st.plotly_chart(
-                fig,
-                use_container_width=True,
-                key=f"{ticker}_main_price_chart",
-            )
-
-            st.write("### Level Summary")
-            st.dataframe(levels_df[cols], use_container_width=True, hide_index=True)
-
-        except Exception as e:
-            st.error(f"{ticker} chart error: {e}")
-
-        st.divider()
-
-def render_hybrid_gex_table(enriched_df: pd.DataFrame, ticker: str):
-    if enriched_df.empty:
-        st.warning("No strongest GEX table data available.")
-        return
-
-    def highlight_rows(row):
-        if row.get("highlight_flag") == "SPOT":
-            return ["background-color: rgba(100, 181, 246, 0.25)"] * len(row)
-        if row.get("highlight_flag") == "HOT":
-            return ["background-color: rgba(255, 215, 64, 0.25)"] * len(row)
-        if row.get("auto_flag") in ["A_PLUS_SUPPORT", "A_PLUS_RESISTANCE"]:
-            return ["background-color: rgba(102, 187, 106, 0.20)"] * len(row)
-        if row.get("auto_flag") in ["TRAP_UP", "TRAP_DOWN", "BREAKOUT_READY", "BREAKDOWN_READY"]:
-            return ["background-color: rgba(255, 138, 101, 0.20)"] * len(row)
-        if row.get("auto_flag") in ["PRE_BREAKOUT", "PRE_BREAKDOWN"]:
-            return ["background-color: rgba(255, 235, 59, 0.18)"] * len(row)
-        if row.get("breakout_risk") == "HIGH":
-            return ["background-color: rgba(255, 87, 34, 0.12)"] * len(row)
-        return [""] * len(row)
-
-    futures_col_name = get_futures_equivalent_label(ticker)
-
-    display_df = enriched_df.copy()
-
-    if "Futures Equivalent" in display_df.columns:
-        display_df[futures_col_name] = display_df["Futures Equivalent"]
-        display_df = display_df.drop(columns=["Futures Equivalent"])
-
-    if "decision_reason" in display_df.columns:
-        display_df["decision_reason"] = display_df["decision_reason"].fillna("").astype(str)
-
-    if "key_interaction" in display_df.columns:
-        display_df["key_interaction"] = display_df["key_interaction"].fillna("").astype(str)
-
-    display_cols = [
-        "strike",
-        futures_col_name,
-        "oi_side",
-        "gamma_side",
-        "agreement",
-        "gamma_regime",
-        "key_interaction",
-        "trigger_state",
-        "breakout_risk",
-        "trade_score",
-        "weighted_gex",
-        "weighted_vex",
-        "vex_strength",
-        "market_behavior",
-        "best_trade_type",
-        "direction",
-        "trade_decision",
-        "auto_flag",
-        "Entry-Stop-Target",
-        "decision_reason",
-    ]
-    display_cols = [c for c in display_cols if c in display_df.columns]
-
-    styled_df = (
-        display_df[display_cols + ["highlight_flag"]]
-        .style
-        .apply(highlight_rows, axis=1)
-        .hide(axis="index")
-        .hide(axis="columns", subset=["highlight_flag"])
-    )
-
-    st.dataframe(
-        styled_df,
-        use_container_width=True,
-    )
-
-
-
-def render_hybrid_scenarios_summary(enriched_df: pd.DataFrame):
-    if enriched_df.empty:
-        return
-
-    st.write("### Scenario Guide")
-
-    scenarios = [
-        ("A_PLUS_SUPPORT", "Strongest long bounce zone. Gamma Key and OI Key align at support."),
-        ("A_PLUS_RESISTANCE", "Strongest short rejection zone. Gamma Key and OI Key align at resistance."),
-        ("SCALP_ONLY", "Spot is near Gamma Key. Expect pinning/chop. Prefer quick scalps only."),
-        ("PRE_BREAKOUT", "OI says resistance but gamma supports the level. Breakout may be building, but price has not confirmed it yet."),
-        ("PRE_BREAKDOWN", "OI says support but gamma resists the level. Breakdown may be building, but price has not confirmed it yet."),
-        ("TRAP_UP", "Breakout is confirmed through a conflict level. Upside squeeze / expansion is active."),
-        ("TRAP_DOWN", "Breakdown is confirmed through a conflict level. Downside expansion is active."),
-        ("WATCH_UP", "Conflict level with some energy. Watch for upside resolution."),
-        ("WATCH_DOWN", "Conflict level with some energy. Watch for downside resolution."),
-        ("BOUNCE_LONG", "Aligned support. Clean long bounce setup."),
-        ("BOUNCE_SHORT", "Aligned resistance. Clean short bounce setup."),
-        ("FAST_LONG", "Aligned support with high VEX. Favor fast long scalps, not long holds."),
-        ("FAST_SHORT", "Aligned resistance with high VEX. Favor fast short scalps, not long holds."),
-        ("GAMMA_ONLY_LONG", "Only gamma supports the level. Lower-confidence long."),
-        ("GAMMA_ONLY_SHORT", "Only gamma resists the level. Lower-confidence short."),
-        ("CHOP_SKIP", "Conflict with low VEX. Messy tape. Best to skip."),
-        ("TRANSITION_SKIP", "Near Gamma Flip without enough VEX. Transition zone, avoid forcing trades."),
-    ]
-
-    seen_flags = set(enriched_df["auto_flag"].dropna().astype(str).tolist())
-
-    for flag, text in scenarios:
-        if flag in seen_flags:
-            st.write(f"**{flag}:** {text}")
-
-    if "breakout_risk" in enriched_df.columns:
-        if (enriched_df["breakout_risk"] == "HIGH").any():
-            st.write("**HIGH breakout risk:** Short-gamma conditions can overwhelm even aligned support/resistance levels.")
-        elif (enriched_df["breakout_risk"] == "MEDIUM").any():
-            st.write("**MEDIUM breakout risk:** Structure still matters, but short-gamma conditions raise failure risk.")
-
-with tab3:
     st.header("Hybrid View")
     st.write(
         "Hybrid view combines a 16-hour OI price chart with a GEX-by-strike chart "
         "inside one shared subplot figure, so levels line up exactly."
     )
 
-    # Use ONLY the sidebar regression inputs/settings
     spy_a, spy_b = calculate_regression_from_points(
         settings.get("spy_x1", 0.0),
         settings.get("spy_x2", 0.0),
@@ -2431,6 +1767,17 @@ with tab3:
             levels_df = data["confluence"]["levels"].copy()
             gamma = data["gamma"]
             oi_key_level = data["oi_payload"].get("key_level")
+            gamma_key_global = gamma.get("gamma_key_global", gamma.get("key_level"))
+
+            scenario = get_five_factor_scenario(
+                spot_price=float(gamma["spot"]),
+                oi_key_level=oi_key_level,
+                gamma_key_global=gamma_key_global,
+                gamma_flip=gamma.get("gamma_flip"),
+                ticker=ticker,
+            )
+
+            render_expected_response_profitability(ticker, scenario)
 
             hist_full = cached_intraday_history(ticker)
             hist_16h = slice_history_last_hours(hist_full, 16)
