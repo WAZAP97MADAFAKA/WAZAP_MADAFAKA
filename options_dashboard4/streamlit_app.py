@@ -1427,24 +1427,88 @@ def get_five_factor_scenario(
     gamma_key_global,
     gamma_flip,
     ticker,
+    gamma_regime_payload=None,
 ):
-    gamma_regime_code = classify_gamma_regime_code(spot_price, gamma_flip)
-    price_position_code = classify_price_position_from_keys(
+    def classify_gamma_regime_code_with_proxy(spot_price, gamma_flip, gamma_regime_payload):
+        if gamma_flip is not None and not pd.isna(gamma_flip):
+            spot = float(spot_price)
+            flip_val = float(gamma_flip)
+
+            if spot > flip_val:
+                return -1, False # Long gamma, real flip
+            if spot < flip_val:
+                return 1, False # Short gamma, real flip
+            return 0, False
+
+        payload = str(gamma_regime_payload or "")
+        if payload == "NO_LOCAL_FLIP_LONG_GAMMA_BIAS":
+            return -1, True
+        if payload == "NO_LOCAL_FLIP_SHORT_GAMMA_BIAS":
+            return 1, True
+
+        return None, True
+
+    def classify_price_position_from_keys_local(spot_price, oi_key_level, gamma_key_global, ticker):
+        if oi_key_level is None or gamma_key_global is None:
+            return None
+
+        spot = float(spot_price)
+        oi_key = float(oi_key_level)
+        gamma_key = float(gamma_key_global)
+
+        lower_key = min(oi_key, gamma_key)
+        upper_key = max(oi_key, gamma_key)
+
+        threshold = 0.5 if ticker == "SPY" else 1.0
+
+        if spot < lower_key - threshold:
+            return -1
+        if spot > upper_key + threshold:
+            return 1
+        return 0
+
+    def classify_key_positioning_code_local(oi_key_level, gamma_key_global):
+        if oi_key_level is None or gamma_key_global is None:
+            return None
+
+        oi_key = float(oi_key_level)
+        gamma_key = float(gamma_key_global)
+
+        if oi_key < gamma_key:
+            return -1
+        if oi_key > gamma_key:
+            return 1
+        return 0
+
+    def classify_key_vs_flip_code_local(key_level, gamma_flip, ticker):
+        if key_level is None or gamma_flip is None or pd.isna(gamma_flip):
+            return None
+
+        key_val = float(key_level)
+        flip_val = float(gamma_flip)
+        threshold = 0.25 if ticker == "SPY" else 0.5
+
+        if key_val > flip_val + threshold:
+            return -1
+        if key_val < flip_val - threshold:
+            return 1
+        return 0
+
+    gamma_regime_code, is_proxy = classify_gamma_regime_code_with_proxy(
+        spot_price, gamma_flip, gamma_regime_payload
+    )
+
+    price_position_code = classify_price_position_from_keys_local(
         spot_price, oi_key_level, gamma_key_global, ticker
     )
-    key_positioning_code = classify_key_positioning_code(
+    key_positioning_code = classify_key_positioning_code_local(
         oi_key_level, gamma_key_global
     )
-    oi_key_code = classify_key_vs_flip_code(oi_key_level, gamma_flip, ticker)
-    gamma_key_code = classify_key_vs_flip_code(gamma_key_global, gamma_flip, ticker)
 
-    if None in [
-        gamma_regime_code,
-        price_position_code,
-        key_positioning_code,
-        oi_key_code,
-        gamma_key_code,
-    ]:
+    oi_key_code = classify_key_vs_flip_code_local(oi_key_level, gamma_flip, ticker)
+    gamma_key_code = classify_key_vs_flip_code_local(gamma_key_global, gamma_flip, ticker)
+
+    if gamma_regime_code is None or price_position_code is None or key_positioning_code is None:
         return {
             "gamma_regime_code": gamma_regime_code,
             "price_position_code": price_position_code,
@@ -1452,14 +1516,17 @@ def get_five_factor_scenario(
             "oi_key_code": oi_key_code,
             "gamma_key_code": gamma_key_code,
             "read": "Incomplete Scenario",
-            "expected_response": "Gamma Flip, OI Key, or Gamma Key Global is missing, so the five-factor scenario cannot be fully classified.",
+            "expected_response": "Not enough information is available to classify the scenario.",
             "profitability": None,
+            "is_proxy": is_proxy,
         }
 
     if gamma_regime_code == -1:
         base = "Long gamma dominates, so price is more likely to pin, mean revert, and fade directional extensions."
-    else:
+    elif gamma_regime_code == 1:
         base = "Short gamma dominates, so price is more likely to expand, trend, and accelerate once a level fails or is accepted."
+    else:
+        base = "Price is sitting at the gamma flip, so the market is in a transition / pivot state."
 
     if price_position_code == -1:
         price_txt = "Price is below the keys, so the market is testing lower structure first."
@@ -1475,52 +1542,95 @@ def get_five_factor_scenario(
     else:
         kp_txt = "OI Key sits above Gamma Key, creating layered resistance above the gamma structure and a staggered reaction zone."
 
-    if oi_key_code == 0:
-        oi_txt = "The OI Key is sitting at the gamma flip, so it adds magnetism and transition behavior."
-    elif oi_key_code == -1:
-        oi_txt = "The OI Key is above the gamma flip, so it acts as an overhead structural level."
+    if not is_proxy and oi_key_code is not None:
+        if oi_key_code == 0:
+            oi_txt = "The OI Key is sitting at the gamma flip, so it adds magnetism and transition behavior."
+        elif oi_key_code == -1:
+            oi_txt = "The OI Key is above the gamma flip, so it acts as an overhead structural level."
+        else:
+            oi_txt = "The OI Key is below the gamma flip, so it acts as an underlying structural level."
     else:
-        oi_txt = "The OI Key is below the gamma flip, so it acts as an underlying structural level."
+        oi_txt = "The OI Key cannot be positioned relative to the gamma flip because no local gamma flip was detected."
 
-    if gamma_key_code == 0:
-        gk_txt = "The Gamma Key Global is sitting at the gamma flip, so hedging pressure is concentrated at the main pivot."
-    elif gamma_key_code == -1:
-        gk_txt = "The Gamma Key Global is above the gamma flip, so the strongest hedging pressure is overhead."
+    if not is_proxy and gamma_key_code is not None:
+        if gamma_key_code == 0:
+            gk_txt = "The Gamma Key Global is sitting at the gamma flip, so hedging pressure is concentrated at the main pivot."
+        elif gamma_key_code == -1:
+            gk_txt = "The Gamma Key Global is above the gamma flip, so the strongest hedging pressure is overhead."
+        else:
+            gk_txt = "The Gamma Key Global is below the gamma flip, so the strongest hedging pressure is underneath price."
     else:
-        gk_txt = "The Gamma Key Global is below the gamma flip, so the strongest hedging pressure is underneath price."
+        gk_txt = "The Gamma Key Global cannot be positioned relative to the gamma flip because no local gamma flip was detected."
 
-    if gamma_regime_code == -1 and price_position_code == -1 and key_positioning_code == 0 and oi_key_code == 1 and gamma_key_code == 1:
-        read = "A+ Long Bounce"
-        profitability = 10
-        combo = "This is one of the cleanest long-gamma buy-the-dip scenarios: both keys are below the flip, aligned with each other, and price is testing from above, so dips are more likely to hold and revert higher."
-    elif gamma_regime_code == -1 and price_position_code == 1 and key_positioning_code == 0 and oi_key_code == -1 and gamma_key_code == -1:
-        read = "A+ Long Fade"
-        profitability = 9
-        combo = "This is one of the cleanest long-gamma fade-the-rip scenarios: both keys are above the flip, aligned with each other, and price is testing into upper structure, so upside extensions are more likely to stall and mean revert."
-    elif gamma_regime_code == 1 and price_position_code == 1 and key_positioning_code == 0 and oi_key_code in (-1, 0) and gamma_key_code in (-1, 0):
-        read = "A+ Breakout"
-        profitability = 10 if (oi_key_code == -1 and gamma_key_code == -1) else 9
-        combo = "This is one of the strongest short-gamma breakout scenarios: price is pressing upper structure, keys are aligned, and at least one key is near or above the flip, so acceptance can trigger fast upside expansion."
-    elif gamma_regime_code == 1 and price_position_code == -1 and key_positioning_code == 0 and oi_key_code == 1 and gamma_key_code == 1:
-        read = "A+ Breakdown"
-        profitability = 10
-        combo = "This is one of the strongest short-gamma breakdown scenarios: price is testing lower structure, both keys sit below the flip, and aligned support can fail violently once accepted lower."
-    elif oi_key_code == 0 or gamma_key_code == 0:
-        read = "Flip Magnet / Pivot"
-        profitability = 4 if price_position_code == 0 else 6
-        combo = "Because at least one key sits at the gamma flip, the market is more likely to pin, rotate, and produce false starts in long gamma, or pivot violently in short gamma. Confirmation matters more than anticipation."
-    elif price_position_code == 0:
-        read = "Range / Transition"
-        profitability = 3 if gamma_regime_code == -1 else 5
-        combo = "Because price is between the keys, the market is inside a range / transition area. Directional edge is weaker here than when price is clearly pressing one side of the structure."
-    elif key_positioning_code == 0:
-        read = "Aligned Structure"
-        profitability = 8
-        combo = "The keys are aligned, which improves structure quality and makes reactions cleaner than split-key cases, but this is not as strong as the top A+ scenarios."
+    if is_proxy:
+        if gamma_regime_code == -1:
+            if price_position_code == -1 and key_positioning_code == 0:
+                read = "Proxy Long Gamma Bounce"
+                profitability = 8
+                combo = "Even without a local gamma flip, the proxy regime is long gamma, price is below aligned keys, and the structure favors mean reversion higher."
+            elif price_position_code == 1 and key_positioning_code == 0:
+                read = "Proxy Long Gamma Fade"
+                profitability = 8
+                combo = "Even without a local gamma flip, the proxy regime is long gamma, price is above aligned keys, and upside extensions are more likely to fade."
+            elif price_position_code == 0:
+                read = "Proxy Long Gamma Range"
+                profitability = 3
+                combo = "Even without a local gamma flip, long-gamma proxy conditions plus price between keys suggest a pinning / range environment with weaker edge."
+            else:
+                read = "Proxy Long Gamma Structure"
+                profitability = 6
+                combo = "Even without a local gamma flip, the proxy regime is long gamma, so structure still leans toward stabilization and mean reversion."
+        else:
+            if price_position_code == 1 and key_positioning_code == 0:
+                read = "Proxy Short Gamma Breakout"
+                profitability = 9
+                combo = "Even without a local gamma flip, the proxy regime is short gamma, price is pressing aligned upper keys, and upside expansion risk is elevated."
+            elif price_position_code == -1 and key_positioning_code == 0:
+                read = "Proxy Short Gamma Breakdown"
+                profitability = 9
+                combo = "Even without a local gamma flip, the proxy regime is short gamma, price is pressing aligned lower keys, and downside expansion risk is elevated."
+            elif price_position_code == 0:
+                read = "Proxy Short Gamma Range"
+                profitability = 5
+                combo = "Even without a local gamma flip, short-gamma proxy conditions plus price between keys suggest unstable range behavior before expansion resolves."
+            else:
+                read = "Proxy Short Gamma Structure"
+                profitability = 6
+                combo = "Even without a local gamma flip, the proxy regime is short gamma, so structure still leans toward instability and expansion once acceptance occurs."
+
     else:
-        read = "Mixed Structure"
-        profitability = 5
-        combo = "The structure is mixed rather than fully aligned. Expect more cross-currents, more trap potential, and lower clarity than the best scenarios."
+        if gamma_regime_code == -1 and price_position_code == -1 and key_positioning_code == 0 and oi_key_code == 1 and gamma_key_code == 1:
+            read = "A+ Long Bounce"
+            profitability = 10
+            combo = "This is one of the cleanest long-gamma buy-the-dip scenarios: both keys are below the flip, aligned with each other, and price is testing from above, so dips are more likely to hold and revert higher."
+        elif gamma_regime_code == -1 and price_position_code == 1 and key_positioning_code == 0 and oi_key_code == -1 and gamma_key_code == -1:
+            read = "A+ Long Fade"
+            profitability = 9
+            combo = "This is one of the cleanest long-gamma fade-the-rip scenarios: both keys are above the flip, aligned with each other, and price is testing into upper structure, so upside extensions are more likely to stall and mean revert."
+        elif gamma_regime_code == 1 and price_position_code == 1 and key_positioning_code == 0 and oi_key_code in (-1, 0) and gamma_key_code in (-1, 0):
+            read = "A+ Breakout"
+            profitability = 10 if (oi_key_code == -1 and gamma_key_code == -1) else 9
+            combo = "This is one of the strongest short-gamma breakout scenarios: price is pressing upper structure, keys are aligned, and at least one key is near or above the flip, so acceptance can trigger fast upside expansion."
+        elif gamma_regime_code == 1 and price_position_code == -1 and key_positioning_code == 0 and oi_key_code == 1 and gamma_key_code == 1:
+            read = "A+ Breakdown"
+            profitability = 10
+            combo = "This is one of the strongest short-gamma breakdown scenarios: price is testing lower structure, both keys sit below the flip, and aligned support can fail violently once accepted lower."
+        elif oi_key_code == 0 or gamma_key_code == 0:
+            read = "Flip Magnet / Pivot"
+            profitability = 4 if price_position_code == 0 else 6
+            combo = "Because at least one key sits at the gamma flip, the market is more likely to pin, rotate, and produce false starts in long gamma, or pivot violently in short gamma. Confirmation matters more than anticipation."
+        elif price_position_code == 0:
+            read = "Range / Transition"
+            profitability = 3 if gamma_regime_code == -1 else 5
+            combo = "Because price is between the keys, the market is inside a range / transition area. Directional edge is weaker here than when price is clearly pressing one side of the structure."
+        elif key_positioning_code == 0:
+            read = "Aligned Structure"
+            profitability = 8
+            combo = "The keys are aligned, which improves structure quality and makes reactions cleaner than split-key cases, but this is not as strong as the top A+ scenarios."
+        else:
+            read = "Mixed Structure"
+            profitability = 5
+            combo = "The structure is mixed rather than fully aligned. Expect more cross-currents, more trap potential, and lower clarity than the best scenarios."
 
     expected_response = " ".join([base, price_txt, kp_txt, oi_txt, gk_txt, combo])
 
@@ -1533,6 +1643,7 @@ def get_five_factor_scenario(
         "read": read,
         "expected_response": expected_response,
         "profitability": profitability,
+        "is_proxy": is_proxy,
     }
 
 
@@ -1542,6 +1653,7 @@ def render_expected_response_profitability(ticker, scenario):
     profitability = scenario.get("profitability")
     read = scenario.get("read", "N/A")
     expected_response = scenario.get("expected_response", "N/A")
+    is_proxy = bool(scenario.get("is_proxy", False))
 
     c1, c2 = st.columns([1, 1])
 
@@ -1553,6 +1665,11 @@ def render_expected_response_profitability(ticker, scenario):
             "Profitability (1-10)",
             profitability if profitability is not None else "N/A"
         )
+
+    if is_proxy:
+        st.warning("No local Gamma Flip was detected. This scenario uses the gamma regime proxy from the payload.")
+    else:
+        st.success("Scenario classified using full 5-factor logic.")
 
     st.info(expected_response)
 
@@ -1775,6 +1892,7 @@ with tab1:
                 gamma_key_global=gamma_key_global,
                 gamma_flip=gamma.get("gamma_flip"),
                 ticker=ticker,
+                gamma_regime_payload=gamma.get("regime"),
             )
 
             render_expected_response_profitability(ticker, scenario)
