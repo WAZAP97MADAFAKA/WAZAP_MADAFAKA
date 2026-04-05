@@ -208,22 +208,199 @@ def get_shared_yaxis_config(forced_y_range):
     }
 
 
+def compute_abs_vex(levels_df: pd.DataFrame) -> float:
+    if levels_df is None or levels_df.empty or "level_vex" not in levels_df.columns:
+        return 0.0
+    return float(pd.to_numeric(levels_df["level_vex"], errors="coerce").fillna(0.0).abs().sum())
+
+
+def compute_net_vex(levels_df: pd.DataFrame) -> float:
+    if levels_df is None or levels_df.empty or "level_vex" not in levels_df.columns:
+        return 0.0
+    return float(pd.to_numeric(levels_df["level_vex"], errors="coerce").fillna(0.0).sum())
+
+
+def classify_abs_vex_regime(abs_vex: float, ticker: str) -> str:
+    if ticker == "SPY":
+        if abs_vex < 8000:
+            return "LOW"
+        if abs_vex <= 25000:
+            return "MEDIUM"
+        return "HIGH"
+
+    if ticker == "QQQ":
+        if abs_vex < 10000:
+            return "LOW"
+        if abs_vex <= 30000:
+            return "MEDIUM"
+        return "HIGH"
+
+    if abs_vex < 8000:
+        return "LOW"
+    if abs_vex <= 25000:
+        return "MEDIUM"
+    return "HIGH"
+
+
+def compute_net_vex_ratio(net_vex: float, abs_vex: float) -> float:
+    if abs_vex <= 0:
+        return 0.0
+    return float(net_vex) / float(abs_vex)
+
+
+def classify_net_vex_bias(net_vex_ratio: float) -> str:
+    if net_vex_ratio <= -0.50:
+        return "STRONG NEGATIVE"
+    if net_vex_ratio < -0.15:
+        return "NEGATIVE"
+    if net_vex_ratio <= 0.15:
+        return "NEUTRAL"
+    if net_vex_ratio < 0.50:
+        return "POSITIVE"
+    return "STRONG POSITIVE"
+
+
+def update_vex_history(ticker: str, timestamp, abs_vex: float, net_vex: float, max_points: int = 120):
+    key = f"vex_history_{ticker}"
+
+    if key not in st.session_state:
+        st.session_state[key] = []
+
+    history = st.session_state[key]
+    history.append(
+        {
+            "datetime": pd.to_datetime(timestamp),
+            "abs_vex": float(abs_vex),
+            "net_vex": float(net_vex),
+            "net_vex_ratio": compute_net_vex_ratio(net_vex, abs_vex),
+        }
+    )
+
+    if len(history) > max_points:
+        history = history[-max_points:]
+
+    st.session_state[key] = history
+    return pd.DataFrame(history)
+
+
+def compute_ves_signal(
+    vex_history_df: pd.DataFrame,
+    ticker: str,
+    gamma_regime_payload: str | None = None,
+):
+    if vex_history_df is None or vex_history_df.empty:
+        return {
+            "state": "OFF",
+            "reason": "No VEX history yet.",
+        }
+
+    df = vex_history_df.sort_values("datetime").reset_index(drop=True)
+    current = df.iloc[-1]
+
+    current_abs_vex = float(current["abs_vex"])
+    current_net_ratio = float(current["net_vex_ratio"])
+    current_abs_regime = classify_abs_vex_regime(current_abs_vex, ticker)
+
+    if len(df) < 3:
+        strong_bias = abs(current_net_ratio) >= 0.35
+        if current_abs_regime == "HIGH" and strong_bias:
+            return {
+                "state": "ON",
+                "reason": "High Abs VEX with strong Net VEX bias.",
+            }
+        return {
+            "state": "OFF",
+            "reason": "Not enough VEX history yet.",
+        }
+
+    lookback_df = df.iloc[-6:-1] if len(df) >= 6 else df.iloc[:-1]
+
+    prev_abs_mean = float(lookback_df["abs_vex"].mean()) if not lookback_df.empty else current_abs_vex
+    prev_ratio_mean = float(lookback_df["net_vex_ratio"].mean()) if not lookback_df.empty else current_net_ratio
+
+    abs_vex_acceleration = current_abs_vex >= (prev_abs_mean * 1.15 if prev_abs_mean > 0 else current_abs_vex)
+    net_ratio_acceleration = abs(current_net_ratio) >= abs(prev_ratio_mean) + 0.10
+    strong_bias = abs(current_net_ratio) >= 0.35
+    very_strong_bias = abs(current_net_ratio) >= 0.50
+
+    gamma_regime_payload = str(gamma_regime_payload or "")
+    short_gamma_proxy = "SHORT" in gamma_regime_payload
+    long_gamma_proxy = "LONG" in gamma_regime_payload
+
+    ves_on = False
+    reason = "No expansion signal."
+
+    if current_abs_regime == "HIGH" and strong_bias:
+        ves_on = True
+        reason = "High Abs VEX with directional Net VEX bias."
+    elif current_abs_regime == "MEDIUM" and abs_vex_acceleration and strong_bias:
+        ves_on = True
+        reason = "Abs VEX is accelerating with directional Net VEX bias."
+    elif short_gamma_proxy and current_abs_regime in ["MEDIUM", "HIGH"] and abs_vex_acceleration and net_ratio_acceleration:
+        ves_on = True
+        reason = "Short-gamma regime with rising VEX pressure."
+    elif very_strong_bias and abs_vex_acceleration:
+        ves_on = True
+        reason = "Directional Net VEX is strong and VEX is building."
+
+    if long_gamma_proxy and current_abs_regime == "LOW":
+        ves_on = False
+        reason = "Long-gamma and low-energy environment."
+
+    return {
+        "state": "ON" if ves_on else "OFF",
+        "reason": reason,
+    }
+
+
+def render_vex_ves_panel(
+    abs_vex: float,
+    abs_vex_regime: str,
+    net_vex: float,
+    net_vex_bias: str,
+    ves_signal: dict,
+):
+    st.write("### VEX & VES")
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    c1.metric("Abs VEX", f"{abs_vex:,.0f}")
+    c2.metric("Abs VEX Regime", abs_vex_regime)
+    c3.metric("Net VEX", f"{net_vex:,.0f}")
+    c4.metric("Net VEX Bias", net_vex_bias)
+    c5.metric("VES", ves_signal.get("state", "OFF"))
+
+    if ves_signal.get("state") == "ON":
+        st.warning(f"VES ON — {ves_signal.get('reason', '')}")
+    else:
+        st.info(f"VES OFF — {ves_signal.get('reason', '')}")
+
 def build_hybrid_subplot_figure(
     ticker,
     hist_df,
     levels_df,
     gamma,
     oi_key_level,
+    vex_history_df=None,
     forced_y_range=None,
 ):
     fig = make_subplots(
-        rows=1,
+        rows=2,
         cols=2,
-        shared_yaxes=True,
+        shared_yaxes=False,
         horizontal_spacing=0.03,
+        vertical_spacing=0.08,
+        row_heights=[0.72, 0.28],
         column_widths=[0.62, 0.38],
+        specs=[
+            [{"type": "xy"}, {"type": "xy"}],
+            [{"type": "xy", "colspan": 2, "secondary_y": True}, None],
+        ],
     )
 
+    # -----------------------------
+    # Top-left: price + OI levels
+    # -----------------------------
     fig.add_trace(
         go.Scatter(
             x=hist_df["datetime"],
@@ -332,6 +509,9 @@ def build_hybrid_subplot_figure(
         yanchor="middle",
     )
 
+    # -----------------------------
+    # Top-right: GEX bars
+    # -----------------------------
     curve = pd.DataFrame(gamma.get("gex_curve", []))
     if curve.empty:
         curve = pd.DataFrame(gamma.get("gex_curve_wide", []))
@@ -512,6 +692,70 @@ def build_hybrid_subplot_figure(
             yanchor="middle",
         )
 
+    # -----------------------------
+    # Bottom: Abs VEX + Net VEX Ratio
+    # -----------------------------
+    if vex_history_df is not None and not vex_history_df.empty:
+        vex_history_df = vex_history_df.sort_values("datetime").reset_index(drop=True)
+
+        fig.add_trace(
+            go.Scatter(
+                x=vex_history_df["datetime"],
+                y=vex_history_df["abs_vex"],
+                mode="lines",
+                name="Abs VEX",
+                line=dict(width=2),
+            ),
+            row=2,
+            col=1,
+            secondary_y=False,
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=vex_history_df["datetime"],
+                y=vex_history_df["net_vex_ratio"],
+                mode="lines",
+                name="Net VEX Ratio",
+                line=dict(width=2, dash="dot"),
+            ),
+            row=2,
+            col=1,
+            secondary_y=True,
+        )
+
+        if ticker == "SPY":
+            low_band = 8000
+            med_band = 25000
+        else:
+            low_band = 10000
+            med_band = 30000
+
+        fig.add_hrect(
+            y0=0,
+            y1=low_band,
+            fillcolor="rgba(0, 200, 83, 0.08)",
+            line_width=0,
+            row=2,
+            col=1,
+        )
+        fig.add_hrect(
+            y0=low_band,
+            y1=med_band,
+            fillcolor="rgba(255, 193, 7, 0.08)",
+            line_width=0,
+            row=2,
+            col=1,
+        )
+        fig.add_hrect(
+            y0=med_band,
+            y1=max(float(vex_history_df["abs_vex"].max()) * 1.15, med_band + 1),
+            fillcolor="rgba(244, 67, 54, 0.08)",
+            line_width=0,
+            row=2,
+            col=1,
+        )
+
     shared_yaxis = get_shared_yaxis_config(forced_y_range)
 
     fig.update_yaxes(shared_yaxis, row=1, col=1)
@@ -529,13 +773,42 @@ def build_hybrid_subplot_figure(
         row=1,
         col=2,
     )
+    fig.update_xaxes(
+        title_text="Time",
+        rangebreaks=[dict(bounds=["sat", "mon"])],
+        rangeslider=dict(visible=False),
+        row=2,
+        col=1,
+    )
+
+    fig.update_yaxes(
+        title_text="Abs VEX",
+        row=2,
+        col=1,
+        secondary_y=False,
+    )
+    fig.update_yaxes(
+        title_text="Net VEX Ratio",
+        row=2,
+        col=1,
+        secondary_y=True,
+        range=[-1, 1],
+        showgrid=False,
+    )
 
     fig.update_layout(
         title=f"{ticker} - Hybrid View",
         template="plotly_dark",
-        height=700,
-        margin=dict(l=60, r=100, t=70, b=50),
-        showlegend=False,
+        height=950,
+        margin=dict(l=60, r=110, t=70, b=50),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0.0,
+        ),
     )
 
     return fig, curve
@@ -1684,6 +1957,28 @@ def render_expected_response_profitability(ticker, scenario):
             }
         )
 
+def render_vex_ves_panel(
+    abs_vex: float,
+    abs_vex_regime: str,
+    net_vex: float,
+    net_vex_bias: str,
+    ves_signal: dict,
+):
+    st.write("### VEX & VES")
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    c1.metric("Abs VEX", f"{abs_vex:,.0f}")
+    c2.metric("Abs VEX Regime", abs_vex_regime)
+    c3.metric("Net VEX", f"{net_vex:,.0f}")
+    c4.metric("Net VEX Bias", net_vex_bias)
+    c5.metric("VES", ves_signal.get("state", "OFF"))
+
+    if ves_signal.get("state") == "ON":
+        st.warning(f"VES ON — {ves_signal.get('reason', '')}")
+    else:
+        st.info(f"VES OFF — {ves_signal.get('reason', '')}")
+
 
 settings = load_settings()
 
@@ -1885,6 +2180,24 @@ with tab1:
             gamma = data["gamma"]
             oi_key_level = data["oi_payload"].get("key_level")
             gamma_key_global = gamma.get("gamma_key_global", gamma.get("key_level"))
+            abs_vex = compute_abs_vex(levels_df)
+            net_vex = compute_net_vex(levels_df)
+            net_vex_ratio = compute_net_vex_ratio(net_vex, abs_vex)
+            abs_vex_regime = classify_abs_vex_regime(abs_vex, ticker)
+            net_vex_bias = classify_net_vex_bias(net_vex_ratio)
+
+            vex_history_df = update_vex_history(
+                ticker=ticker, 
+                timestamp=pd.Timestamp.now(), 
+                abs_vex=abs_vex, 
+                net_vex=net_vex,
+                )
+            
+            ves_signal = compute_vex_signal(
+                vex_history_df=vex_history_df,
+                ticker=ticker,
+                gamma_regime_payload=gamma.get("regime"),
+            )
 
             scenario = get_five_factor_scenario(
                 spot_price=float(gamma["spot"]),
@@ -1896,6 +2209,13 @@ with tab1:
             )
 
             render_expected_response_profitability(ticker, scenario)
+            render_vex_ves_panel(
+                abs_vex=abs_vex,
+                abs_vex_regime=abs_vex_regime,
+                net_vex=net_vex,
+                net_vex_bias=net_vex_bias,
+                ves_signal=ves_signal,
+            )
 
             hist_full = cached_intraday_history(ticker)
             hist_16h = slice_history_last_hours(hist_full, 16)
@@ -1912,6 +2232,7 @@ with tab1:
                 levels_df=levels_df,
                 gamma=gamma,
                 oi_key_level=oi_key_level,
+                vex_history_df=vex_history_df,
                 forced_y_range=aligned_y_range,
             )
 
