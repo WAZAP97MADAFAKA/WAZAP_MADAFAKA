@@ -2193,7 +2193,7 @@ with tab1:
                 net_vex=net_vex,
                 )
             
-            ves_signal = compute_vex_signal(
+            ves_signal = compute_ves_signal(
                 vex_history_df=vex_history_df,
                 ticker=ticker,
                 gamma_regime_payload=gamma.get("regime"),
