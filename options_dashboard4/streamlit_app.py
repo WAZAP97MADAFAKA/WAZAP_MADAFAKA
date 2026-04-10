@@ -2218,7 +2218,7 @@ with tab1:
             )
 
             hist_full = cached_intraday_history(ticker)
-            hist_16h = slice_history_last_hours(hist_full, 16)
+            hist_16h = slice_history_last_hours(hist_full, 8)
 
             aligned_y_range = get_aligned_y_range(
                 hist_df=hist_16h,
