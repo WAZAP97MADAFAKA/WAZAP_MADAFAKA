@@ -5,8 +5,7 @@ from options_common import (
     get_weighted_option_data_polygon,
     filter_local_calls,
     filter_local_puts,
-    choose_nearest_key_level,
-    get_local_range,
+    get_local_search_range_from_filtered,
 )
 
 
@@ -50,7 +49,6 @@ def get_oi_levels(
         ignore_index=True,
     )
 
-    # 🔥 TRUE OI KEY (dominant level, NOT nearest to spot)
     combined_levels = combined_levels.dropna(subset=["strike", "weighted_open_interest"])
 
     if not combined_levels.empty:
@@ -61,7 +59,7 @@ def get_oi_levels(
     else:
         key_level = None
 
-    search_min, search_max = get_local_range(spot, max_distance)
+    search_min, search_max = get_local_search_range_from_filtered(local_calls, local_puts, spot)
 
     return {
         "model": "OI",

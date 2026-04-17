@@ -25,6 +25,114 @@ def map_ticker_for_sources(ticker: str):
 
     return mapping.get(ticker, (ticker, ticker))
 
+def get_strike_count(max_distance: float) -> int:
+    try:
+        return max(1, int(round(float(max_distance))))
+    except Exception:
+        return 1
+
+
+def get_chain_fetch_span(ticker_symbol: str, max_distance: float | None) -> float | None:
+    """
+    Fetch a wider point range from Massive/Polygon so index products like SPX/NDX
+    still include enough strikes when strike spacing is 5 or 10 points.
+    """
+    if max_distance is None:
+        return None
+
+    strike_count = get_strike_count(max_distance)
+
+    if ticker_symbol in ["SPX", "NDX"]:
+        return float(strike_count * 20.0)
+
+    return float(max_distance) * 1.5
+
+
+def filter_local_calls(combined_calls: pd.DataFrame, spot: float, max_distance: float) -> pd.DataFrame:
+    """
+    Returns the nearest N call strikes ABOVE spot, where N = max_distance.
+    """
+    if combined_calls is None or combined_calls.empty:
+        return combined_calls.copy()
+
+    strike_count = get_strike_count(max_distance)
+
+    eligible = combined_calls[combined_calls["strike"] > spot].copy()
+    if eligible.empty:
+        return eligible
+
+    eligible = eligible.sort_values("strike", ascending=True)
+    selected_strikes = eligible["strike"].drop_duplicates().head(strike_count).tolist()
+
+    out = eligible[eligible["strike"].isin(selected_strikes)].copy()
+    return out.sort_values("strike", ascending=True).reset_index(drop=True)
+
+
+def filter_local_puts(combined_puts: pd.DataFrame, spot: float, max_distance: float) -> pd.DataFrame:
+    """
+    Returns the nearest N put strikes BELOW spot, where N = max_distance.
+    """
+    if combined_puts is None or combined_puts.empty:
+        return combined_puts.copy()
+
+    strike_count = get_strike_count(max_distance)
+
+    eligible = combined_puts[combined_puts["strike"] < spot].copy()
+    if eligible.empty:
+        return eligible
+
+    eligible = eligible.sort_values("strike", ascending=False)
+    selected_strikes = eligible["strike"].drop_duplicates().head(strike_count).tolist()
+
+    out = eligible[eligible["strike"].isin(selected_strikes)].copy()
+    return out.sort_values("strike", ascending=False).reset_index(drop=True)
+
+
+def filter_local_curve(grouped_df: pd.DataFrame, spot: float, max_distance: float) -> pd.DataFrame:
+    """
+    Returns the nearest N strikes above and N strikes below spot
+    from a grouped strike curve (like combined GEX curve).
+    """
+    if grouped_df is None or grouped_df.empty:
+        return grouped_df.copy()
+
+    strike_count = get_strike_count(max_distance)
+
+    above = (
+        grouped_df[grouped_df["strike"] > spot]
+        .sort_values("strike", ascending=True)
+        .drop_duplicates(subset=["strike"])
+        .head(strike_count)
+    )
+
+    below = (
+        grouped_df[grouped_df["strike"] < spot]
+        .sort_values("strike", ascending=False)
+        .drop_duplicates(subset=["strike"])
+        .head(strike_count)
+    )
+
+    out = pd.concat([above, below], ignore_index=True)
+    if out.empty:
+        return out
+
+    return out.sort_values("strike", ascending=False).reset_index(drop=True)
+
+
+def get_local_search_range_from_filtered(local_calls: pd.DataFrame, local_puts: pd.DataFrame, spot: float):
+    strikes = []
+
+    if local_calls is not None and not local_calls.empty and "strike" in local_calls.columns:
+        strikes.extend(pd.to_numeric(local_calls["strike"], errors="coerce").dropna().tolist())
+
+    if local_puts is not None and not local_puts.empty and "strike" in local_puts.columns:
+        strikes.extend(pd.to_numeric(local_puts["strike"], errors="coerce").dropna().tolist())
+
+    if not strikes:
+        return float(spot), float(spot)
+
+    return float(min(strikes)), float(max(strikes))
+
 def get_api_key() -> str:
     api_key = os.getenv("POLYGON_API_KEY") or os.getenv("MASSIVE_API_KEY")
     if not api_key:
@@ -264,14 +372,18 @@ def get_weighted_option_data_polygon(
     """
     Spot comes from yfinance.
     Options chain / greeks come from Polygon.
+    For SPX/NDX, max_distance is treated as strike count downstream,
+    so we fetch a wider point range here to make sure enough strikes are available.
     """
     spot = float(fixed_spot) if fixed_spot is not None else get_current_spot_price(ticker_symbol)
 
     strike_gte = None
     strike_lte = None
     if max_distance is not None:
-        strike_gte = max(0.01, spot - (max_distance * 1.5))
-        strike_lte = spot + (max_distance * 1.5)
+        fetch_span = get_chain_fetch_span(ticker_symbol, max_distance)
+        if fetch_span is not None:
+            strike_gte = max(0.01, spot - fetch_span)
+            strike_lte = spot + fetch_span
 
     chain_df = get_option_chain_snapshot_df(
         ticker_symbol=ticker_symbol,

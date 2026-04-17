@@ -5,8 +5,8 @@ from options_common import (
     get_weighted_option_data_polygon,
     filter_local_calls,
     filter_local_puts,
-    choose_nearest_key_level,
-    get_local_range,
+    filter_local_curve,
+    get_local_search_range_from_filtered,
 )
 
 
@@ -73,6 +73,7 @@ def get_gamma_levels(
     # -----------------------------
     # Local window for visible trading levels
     # anchored to OI fixed spot
+    # max_distance = strike count above / below spot
     # -----------------------------
     _, expirations, combined_calls, combined_puts = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
@@ -109,7 +110,7 @@ def get_gamma_levels(
     )
 
     # -----------------------------
-    # Wider scan for flip detection + full GEX bar chart
+    # Wider scan for flip detection + full GEX universe
     # also anchored to OI fixed spot
     # -----------------------------
     _, _, wide_calls, wide_puts = get_weighted_option_data_polygon(
@@ -137,58 +138,56 @@ def get_gamma_levels(
     gamma_flip = estimate_gamma_flip(combined_all)
     total_net_gex = float(combined_all["weighted_gex"].sum()) if not combined_all.empty else 0.0
 
-    search_min, search_max = get_local_range(anchor_spot, max_distance)
+    if not combined_all.empty:
+        combined_all["abs_weighted_gex"] = combined_all["weighted_gex"].abs()
+    else:
+        combined_all["abs_weighted_gex"] = pd.Series(dtype=float)
 
     # -----------------------------
     # GLOBAL GAMMA KEY
     # -----------------------------
     gamma_key_global = None
-    if not combined_all.empty:
-        combined_all["abs_weighted_gex"] = combined_all["weighted_gex"].abs()
-        global_curve = combined_all.dropna(subset=["strike", "abs_weighted_gex"]).copy()
+    global_curve = combined_all.dropna(subset=["strike", "abs_weighted_gex"]).copy()
 
-        if not global_curve.empty:
-            gamma_key_global = float(
-                global_curve.loc[global_curve["abs_weighted_gex"].idxmax(), "strike"]
-            )
+    if not global_curve.empty:
+        gamma_key_global = float(
+            global_curve.loc[global_curve["abs_weighted_gex"].idxmax(), "strike"]
+        )
+
+    # -----------------------------
+    # LOCAL GEX CURVE (exact nearest N strikes above/below anchor spot)
+    # -----------------------------
+    local_gex_curve = filter_local_curve(combined_all, anchor_spot, max_distance)
+
+    if local_gex_curve.empty:
+        search_min, search_max = anchor_spot, anchor_spot
+    else:
+        search_min = float(local_gex_curve["strike"].min())
+        search_max = float(local_gex_curve["strike"].max())
 
     # -----------------------------
     # LOCAL GAMMA KEY
     # -----------------------------
     gamma_key_local = None
-    local_curve_for_key = combined_all[
-        (combined_all["strike"] >= search_min) & (combined_all["strike"] <= search_max)
-    ].copy()
+    local_curve_for_key = local_gex_curve.dropna(subset=["strike", "abs_weighted_gex"]).copy()
 
     if not local_curve_for_key.empty:
-        if "abs_weighted_gex" not in local_curve_for_key.columns:
-            local_curve_for_key["abs_weighted_gex"] = local_curve_for_key["weighted_gex"].abs()
-
-        local_curve_for_key = local_curve_for_key.dropna(subset=["strike", "abs_weighted_gex"])
-
-        if not local_curve_for_key.empty:
-            gamma_key_local = float(
-                local_curve_for_key.loc[
-                    local_curve_for_key["abs_weighted_gex"].idxmax(), "strike"
-                ]
-            )
+        gamma_key_local = float(
+            local_curve_for_key.loc[
+                local_curve_for_key["abs_weighted_gex"].idxmax(), "strike"
+            ]
+        )
 
     key_level = gamma_key_local if gamma_key_local is not None else gamma_key_global
 
     # Regime should still use LIVE current spot against the flip
     regime = infer_gamma_regime_from_net_gex(float(live_spot), gamma_flip, total_net_gex)
 
-    # local GEX curve for plotting / table
-    # anchored to OI fixed spot so it matches OI range
-    local_gex_curve = combined_all[
-        (combined_all["strike"] >= search_min) & (combined_all["strike"] <= search_max)
-    ].copy()
-
     return {
         "model": "GAMMA",
         "ticker": ticker_symbol,
-        "spot": round(float(live_spot), 2), # keep LIVE spot for the chart line
-        "anchor_spot": round(float(anchor_spot), 2), # OI-fixed anchor used for range selection
+        "spot": round(float(live_spot), 2),
+        "anchor_spot": round(float(anchor_spot), 2),
         "expirations_used": expirations,
         "weights_used": weights,
         "search_range": [round(search_min, 2), round(search_max, 2)],
