@@ -218,18 +218,20 @@ def get_shared_yaxis_config(forced_y_range):
     y_min, y_max = forced_y_range
     span = float(y_max) - float(y_min)
 
-    if span <= 25:
+    if span <= 20:
         dtick = 1
-    elif span <= 60:
+    elif span <= 40:
         dtick = 2
-    elif span <= 120:
+    elif span <= 100:
         dtick = 5
-    elif span <= 250:
+    elif span <= 200:
         dtick = 10
-    elif span <= 600:
+    elif span <= 500:
         dtick = 25
-    else:
+    elif span <= 1000:
         dtick = 50
+    else:
+        dtick = 100
 
     tick0 = int(y_min // dtick) * dtick
 
