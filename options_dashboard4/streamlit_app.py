@@ -216,12 +216,28 @@ def get_shared_yaxis_config(forced_y_range):
         }
 
     y_min, y_max = forced_y_range
+    span = float(y_max) - float(y_min)
+
+    if span <= 25:
+        dtick = 1
+    elif span <= 60:
+        dtick = 2
+    elif span <= 120:
+        dtick = 5
+    elif span <= 250:
+        dtick = 10
+    elif span <= 600:
+        dtick = 25
+    else:
+        dtick = 50
+
+    tick0 = int(y_min // dtick) * dtick
 
     return {
         "range": forced_y_range,
         "tickmode": "linear",
-        "tick0": int(y_min // 5) * 5,
-        "dtick": 5,
+        "tick0": tick0,
+        "dtick": dtick,
         "fixedrange": False,
     }
 
@@ -776,8 +792,21 @@ def build_hybrid_subplot_figure(
 
     shared_yaxis = get_shared_yaxis_config(forced_y_range)
 
-    fig.update_yaxes(shared_yaxis, row=1, col=1)
-    fig.update_yaxes(shared_yaxis, row=1, col=2)
+    # Left chart: show Y-axis labels normally
+    fig.update_yaxes(
+        **shared_yaxis,
+        showticklabels=True,
+        row=1,
+        col=1,
+    )
+
+    # Right chart: keep same Y range, but hide labels to avoid clutter
+    fig.update_yaxes(
+        **shared_yaxis,
+        showticklabels=False,
+        row=1,
+        col=2,
+    )
 
     fig.update_xaxes(
         title_text="Time",
