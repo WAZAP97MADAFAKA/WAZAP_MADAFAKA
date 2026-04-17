@@ -4,7 +4,11 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
-from massive import RESTClient
+
+try:
+    from massive import RESTClient
+except ImportError:
+    from polygon import RESTClient
 
 from options_config import NY_TIMEZONE
 
