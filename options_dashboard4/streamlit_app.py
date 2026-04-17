@@ -167,15 +167,29 @@ def slice_history_last_hours(hist_df: pd.DataFrame, hours: int) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def get_aligned_y_range(hist_df: pd.DataFrame, levels_df: pd.DataFrame, current_spot: float):
+def get_aligned_y_range(
+    hist_df: pd.DataFrame,
+    levels_df: pd.DataFrame,
+    current_spot: float,
+    gamma_curve_records=None,
+):
     values = []
 
+    # Price history
     if hist_df is not None and not hist_df.empty and "close" in hist_df.columns:
         values.extend(pd.to_numeric(hist_df["close"], errors="coerce").dropna().tolist())
 
+    # OI / confluence levels
     if levels_df is not None and not levels_df.empty and "level" in levels_df.columns:
         values.extend(pd.to_numeric(levels_df["level"], errors="coerce").dropna().tolist())
 
+    # Local GEX curve strikes (this is the important fix)
+    if gamma_curve_records:
+        curve_df = pd.DataFrame(gamma_curve_records)
+        if not curve_df.empty and "strike" in curve_df.columns:
+            values.extend(pd.to_numeric(curve_df["strike"], errors="coerce").dropna().tolist())
+
+    # Current spot
     if current_spot is not None:
         values.append(float(current_spot))
 
@@ -189,22 +203,26 @@ def get_aligned_y_range(hist_df: pd.DataFrame, levels_df: pd.DataFrame, current_
     if spread <= 0:
         pad = max(abs(y_max) * 0.01, 1.0)
     else:
-        pad = spread * 0.08
+        pad = spread * 0.05
 
     return [round(y_min - pad, 2), round(y_max + pad, 2)]
 
 
+
 def get_shared_yaxis_config(forced_y_range):
     if forced_y_range is None:
-        return {}
+        return {
+            "fixedrange": False,
+        }
 
     y_min, y_max = forced_y_range
+
     return {
         "range": forced_y_range,
         "tickmode": "linear",
         "tick0": int(y_min // 5) * 5,
         "dtick": 5,
-        "fixedrange": True,
+        "fixedrange": False,
     }
 
 
@@ -2224,6 +2242,7 @@ with tab1:
                 hist_df=hist_16h,
                 levels_df=levels_df,
                 current_spot=float(gamma["spot"]),
+                gamma_curve_records=gamma.get("gex_curve", []),
             )
 
             hybrid_fig, curve_df = build_hybrid_subplot_figure(
