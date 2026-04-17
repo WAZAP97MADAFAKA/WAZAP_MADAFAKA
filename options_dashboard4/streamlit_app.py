@@ -118,11 +118,20 @@ def calculate_regression_from_points(x1, x2, y1, y2):
 
 
 def get_futures_equivalent_label(ticker):
-    if ticker == "SPY":
+    if ticker in ["SPY", "SPX"]:
         return "ES Equivalent"
-    if ticker == "QQQ":
+    if ticker in ["QQQ", "NDX"]:
         return "MNQ Equivalent"
     return "Futures Equivalent"
+
+def format_ticker_display(ticker):
+    mapping = {
+        "SPX": "SPX",
+        "NDX": "NDX",
+        "SPY": "SPY",
+        "QQQ": "QQQ",
+    }
+    return mapping.get(ticker, ticker)
 
 
 def calculate_futures_equivalent(ticker, x_value, settings_dict):
@@ -1986,8 +1995,8 @@ st.sidebar.header("Settings")
 
 tickers = st.sidebar.multiselect(
     "Tickers",
-    options=["SPY", "QQQ"],
-    default=settings["tickers"] if settings["tickers"] else ["SPY", "QQQ"],
+    options=["SPY", "QQQ", "SPX", "NDX"],
+    default=settings["tickers"] if settings["tickers"] else ["SPY", "QQQ", "SPX", "NDX"],
 )
 
 weights_text = st.sidebar.text_input(
@@ -2167,7 +2176,7 @@ with tab1:
     }
 
     for ticker in (tickers or DEFAULT_TICKERS):
-        st.subheader(f"{ticker} Hybrid View")
+        st.subheader(f"{format_ticker_display(ticker)} Hybrid View")
 
         data = ticker_data.get(ticker, {})
         if "error" in data:

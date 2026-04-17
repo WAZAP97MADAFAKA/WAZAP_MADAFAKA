@@ -8,6 +8,25 @@ from massive import RESTClient
 
 from options_config import NY_TIMEZONE
 
+def get_yfinance_symbol(ticker_symbol: str) -> str:
+    mapping = {
+        "SPX": "^SPX",
+        "NDX": "^NDX",
+        "SPY": "SPY",
+        "QQQ": "QQQ",
+    }
+    return mapping.get(ticker_symbol, ticker_symbol)
+
+
+def get_options_underlying_symbol(ticker_symbol: str) -> str:
+    mapping = {
+        "SPX": "SPX",
+        "NDX": "NDX",
+        "SPY": "SPY",
+        "QQQ": "QQQ",
+    }
+    return mapping.get(ticker_symbol, ticker_symbol)
+
 NY_TZ = ZoneInfo(NY_TIMEZONE)
 
 
@@ -102,35 +121,45 @@ def _download_yf_intraday(
 
 
 def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
-    """
-    Returns the last 24 hours worth of 1-minute bars (1440 bars max)
-    from yfinance, including:
-    - premarket
-    - market hours
-    - aftermarket
-    - overnight
+    import yfinance as yf
 
-    This is bar-based instead of strict wall-clock-based so it still works
-    on weekends and holidays.
-    """
-    df = _download_yf_intraday(
-        ticker_symbol=ticker_symbol,
-        period="5d",
-        interval="1m",
-        prepost=True,
+    yf_symbol = get_yfinance_symbol(ticker_symbol)
+    ticker = yf.Ticker(yf_symbol)
+
+    hist = ticker.history(period="5d", interval="1m", auto_adjust=False, prepost=True)
+
+    if hist.empty:
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+
+    hist = hist.copy().reset_index()
+
+    dt_col = "Datetime" if "Datetime" in hist.columns else "Date"
+    hist[dt_col] = pd.to_datetime(hist[dt_col], utc=True).dt.tz_convert("America/New_York")
+
+    hist = hist.rename(
+        columns={
+            dt_col: "datetime",
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Volume": "volume",
+        }
     )
 
-    if df.empty:
-        raise ValueError(f"No intraday data found for {ticker_symbol}")
+    cols = ["datetime", "open", "high", "low", "close", "volume"]
+    hist = hist[[c for c in cols if c in hist.columns]].copy()
 
-    # 24 hours of 1-minute bars
-    df = df.tail(1440).copy()
+    hist = hist.sort_values("datetime").reset_index(drop=True)
 
-    if df.empty:
-        raise ValueError(f"No last-24h data found for {ticker_symbol}")
+    if hist.empty:
+        return hist
 
-    df["session_date"] = df["datetime"].dt.date
-    return df.reset_index(drop=True)
+    end_time = hist["datetime"].max()
+    start_time = end_time - pd.Timedelta(hours=24)
+
+    hist = hist[hist["datetime"] >= start_time].copy()
+    return hist.reset_index(drop=True)
 
 
 def get_current_spot_price(ticker_symbol: str) -> float:
@@ -145,41 +174,34 @@ def get_current_spot_price(ticker_symbol: str) -> float:
 
 
 def get_latest_session_open_spot_price(ticker_symbol: str) -> float:
-    """
-    Uses yfinance to find the most recent regular-session 9:30 AM NY open.
-    This is used to anchor OI.
-    On weekends, this uses the last available trading session.
-    """
-    df = _download_yf_intraday(
-        ticker_symbol=ticker_symbol,
-        period="5d",
-        interval="1m",
-        prepost=False,
-    )
+    import yfinance as yf
 
-    if df.empty:
-        raise ValueError(f"No session open data for {ticker_symbol}")
+    yf_symbol = get_yfinance_symbol(ticker_symbol)
+    ticker = yf.Ticker(yf_symbol)
 
-    df = df[
-        ((df["datetime"].dt.hour > 9) | ((df["datetime"].dt.hour == 9) & (df["datetime"].dt.minute >= 30)))
-        & (df["datetime"].dt.hour < 16)
-    ].copy()
+    hist = ticker.history(period="5d", interval="1m", auto_adjust=False, prepost=True)
 
-    if df.empty:
-        raise ValueError(f"No regular-session intraday data found for {ticker_symbol}")
+    if hist.empty:
+        raise ValueError(f"No yfinance history found for {ticker_symbol} ({yf_symbol})")
 
-    df["session_date"] = df["datetime"].dt.date
-    latest_session = max(df["session_date"])
-    day_df = df[df["session_date"] == latest_session].copy()
+    hist = hist.copy()
+    hist = hist.reset_index()
 
-    open_bar = day_df[
-        (day_df["datetime"].dt.hour == 9) & (day_df["datetime"].dt.minute == 30)
-    ]
+    dt_col = "Datetime" if "Datetime" in hist.columns else "Date"
+    hist[dt_col] = pd.to_datetime(hist[dt_col], utc=True).dt.tz_convert("America/New_York")
 
-    if not open_bar.empty:
-        return float(open_bar["open"].iloc[0])
+    hist["session_date"] = hist[dt_col].dt.date
+    hist["session_time"] = hist[dt_col].dt.strftime("%H:%M")
 
-    return float(day_df["open"].iloc[0])
+    regular_open_rows = hist[hist["session_time"] == "09:30"]
+
+    if regular_open_rows.empty:
+        raise ValueError(f"No 09:30 session open found for {ticker_symbol} ({yf_symbol})")
+
+    latest_session_date = regular_open_rows["session_date"].max()
+    latest_open = regular_open_rows[regular_open_rows["session_date"] == latest_session_date].iloc[0]
+
+    return float(latest_open["Open"])
 
 
 def get_option_chain_snapshot_df(
@@ -240,15 +262,24 @@ def get_first_n_expirations_from_chain_df(chain_df: pd.DataFrame, n: int) -> lis
 
 def get_weighted_option_data_polygon(
     ticker_symbol: str,
-    weights: list[float],
-    fixed_spot: float | None = None,
-    max_distance: float | None = None,
+    weights,
+    fixed_spot=None,
+    max_distance=None,
 ):
-    """
-    Spot comes from yfinance.
-    Options chain / greeks come from Polygon.
-    """
-    spot = float(fixed_spot) if fixed_spot is not None else get_current_spot_price(ticker_symbol)
+    options_symbol = get_options_underlying_symbol(ticker_symbol)
+
+    # Keep your existing Massive/Polygon client creation here
+
+    # Use fixed_spot if provided, otherwise get live/underlying spot from yfinance
+    if fixed_spot is not None:
+        spot = float(fixed_spot)
+    else:
+        spot = float(get_latest_session_open_spot_price(ticker_symbol))
+
+    # IMPORTANT:
+    # Anywhere below in this function where you pass the underlying symbol
+    # into Massive / Polygon options-chain requests, use `options_symbol`
+    # instead of `ticker_symbol`.
 
     strike_gte = None
     strike_lte = None
@@ -257,7 +288,7 @@ def get_weighted_option_data_polygon(
         strike_lte = spot + (max_distance * 1.5)
 
     chain_df = get_option_chain_snapshot_df(
-        ticker_symbol=ticker_symbol,
+        underlying_ticker=options_symbol,
         strike_price_gte=strike_gte,
         strike_price_lte=strike_lte,
     )
