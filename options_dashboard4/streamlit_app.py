@@ -805,7 +805,7 @@ def build_hybrid_subplot_figure(
     # Right chart: keep same Y range, but hide labels to avoid clutter
     fig.update_yaxes(
         **shared_yaxis,
-        showticklabels=False,
+        showticklabels=True,
         row=1,
         col=2,
     )
