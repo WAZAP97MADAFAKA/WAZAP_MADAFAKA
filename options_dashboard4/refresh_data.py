@@ -86,6 +86,7 @@ def refresh_oi_data():
             "ticker": result["ticker"],
             "spot": result["spot"],
             "oi_fixed_spot": open_spot,
+            "strike_step": result.get("strike_step"),
             "expirations_used": result["expirations_used"],
             "weights_used": result["weights_used"],
             "search_range": result["search_range"],

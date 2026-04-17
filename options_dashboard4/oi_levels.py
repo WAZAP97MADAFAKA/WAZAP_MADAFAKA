@@ -19,15 +19,15 @@ def get_oi_levels(
     if weights is None:
         weights = EXPIRATION_WEIGHTS
 
-    spot, expirations, combined_calls, combined_puts = get_weighted_option_data_polygon(
+    spot, expirations, combined_calls, combined_puts, strike_step = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
         fixed_spot=fixed_spot,
         max_distance=max_distance,
     )
 
-    local_calls = filter_local_calls(combined_calls, spot, max_distance)
-    local_puts = filter_local_puts(combined_puts, spot, max_distance)
+    local_calls = filter_local_calls(combined_calls, spot, max_distance, strike_step=strike_step)
+    local_puts = filter_local_puts(combined_puts, spot, max_distance, strike_step=strike_step)
 
     top_resistances = (
         local_calls.sort_values("weighted_open_interest", ascending=False)
@@ -59,12 +59,13 @@ def get_oi_levels(
     else:
         key_level = None
 
-    search_min, search_max = get_local_search_range_from_filtered(local_calls, local_puts, spot)
+    search_min, search_max = get_local_range(spot, max_distance, strike_step=strike_step)
 
     return {
         "model": "OI",
         "ticker": ticker_symbol,
         "spot": round(spot, 2),
+        "strike_step": strike_step,
         "expirations_used": expirations,
         "weights_used": weights,
         "search_range": [round(search_min, 2), round(search_max, 2)],
