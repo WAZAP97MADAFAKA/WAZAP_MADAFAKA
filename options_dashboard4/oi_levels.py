@@ -5,6 +5,7 @@ from options_common import (
     get_weighted_option_data_polygon,
     filter_local_calls,
     filter_local_puts,
+    choose_nearest_key_level,
     get_local_range,
 )
 
@@ -19,33 +20,15 @@ def get_oi_levels(
     if weights is None:
         weights = EXPIRATION_WEIGHTS
 
-    result = get_weighted_option_data_polygon(
+    spot, expirations, combined_calls, combined_puts = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
         fixed_spot=fixed_spot,
         max_distance=max_distance,
     )
 
-    # Supports both old and new return signatures
-    if len(result) == 4:
-        spot, expirations, combined_calls, combined_puts = result
-        strike_step = 1.0
-    else:
-        spot, expirations, combined_calls, combined_puts, strike_step = result
-
-    local_calls = filter_local_calls(
-        combined_calls,
-        spot,
-        max_distance,
-        strike_step=strike_step,
-    )
-
-    local_puts = filter_local_puts(
-        combined_puts,
-        spot,
-        max_distance,
-        strike_step=strike_step,
-    )
+    local_calls = filter_local_calls(combined_calls, spot, max_distance)
+    local_puts = filter_local_puts(combined_puts, spot, max_distance)
 
     top_resistances = (
         local_calls.sort_values("weighted_open_interest", ascending=False)
@@ -67,6 +50,7 @@ def get_oi_levels(
         ignore_index=True,
     )
 
+    # 🔥 TRUE OI KEY (dominant level, NOT nearest to spot)
     combined_levels = combined_levels.dropna(subset=["strike", "weighted_open_interest"])
 
     if not combined_levels.empty:
@@ -77,20 +61,15 @@ def get_oi_levels(
     else:
         key_level = None
 
-    search_min, search_max = get_local_range(
-        spot,
-        max_distance,
-        strike_step=strike_step,
-    )
+    search_min, search_max = get_local_range(spot, max_distance)
 
     return {
         "model": "OI",
         "ticker": ticker_symbol,
-        "spot": round(float(spot), 2),
-        "strike_step": float(strike_step),
+        "spot": round(spot, 2),
         "expirations_used": expirations,
         "weights_used": weights,
-        "search_range": [round(float(search_min), 2), round(float(search_max), 2)],
+        "search_range": [round(search_min, 2), round(search_max, 2)],
         "key_level": key_level,
         "top_resistances": top_resistances[
             ["strike", "weighted_open_interest", "total_open_interest", "weighted_volume", "total_volume"]

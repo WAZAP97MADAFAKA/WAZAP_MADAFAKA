@@ -5,6 +5,7 @@ from options_common import (
     get_weighted_option_data_polygon,
     filter_local_calls,
     filter_local_puts,
+    choose_nearest_key_level,
     get_local_range,
 )
 
@@ -53,24 +54,35 @@ def get_gamma_levels(
     if weights is None:
         weights = EXPIRATION_WEIGHTS
 
-    live_spot, expirations_live, _, _, live_strike_step = get_weighted_option_data_polygon(
+    # -----------------------------
+    # Get LIVE current spot first
+    # -----------------------------
+    live_spot, expirations_live, _, _ = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
         fixed_spot=None,
         max_distance=max_distance,
     )
 
+    # -----------------------------
+    # Use OI fixed spot as the anchor if provided
+    # Otherwise fall back to live spot
+    # -----------------------------
     anchor_spot = float(fixed_spot) if fixed_spot is not None else float(live_spot)
 
-    _, expirations, combined_calls, combined_puts, strike_step = get_weighted_option_data_polygon(
+    # -----------------------------
+    # Local window for visible trading levels
+    # anchored to OI fixed spot
+    # -----------------------------
+    _, expirations, combined_calls, combined_puts = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
         fixed_spot=anchor_spot,
         max_distance=max_distance,
     )
 
-    local_calls = filter_local_calls(combined_calls, anchor_spot, max_distance, strike_step=strike_step)
-    local_puts = filter_local_puts(combined_puts, anchor_spot, max_distance, strike_step=strike_step)
+    local_calls = filter_local_calls(combined_calls, anchor_spot, max_distance)
+    local_puts = filter_local_puts(combined_puts, anchor_spot, max_distance)
 
     top_resistances = (
         local_calls.sort_values("weighted_gex", ascending=False)
@@ -96,7 +108,11 @@ def get_gamma_levels(
         .reset_index(drop=True)
     )
 
-    _, _, wide_calls, wide_puts, wide_strike_step = get_weighted_option_data_polygon(
+    # -----------------------------
+    # Wider scan for flip detection + full GEX bar chart
+    # also anchored to OI fixed spot
+    # -----------------------------
+    _, _, wide_calls, wide_puts = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
         fixed_spot=anchor_spot,
@@ -121,8 +137,11 @@ def get_gamma_levels(
     gamma_flip = estimate_gamma_flip(combined_all)
     total_net_gex = float(combined_all["weighted_gex"].sum()) if not combined_all.empty else 0.0
 
-    search_min, search_max = get_local_range(anchor_spot, max_distance, strike_step=strike_step)
+    search_min, search_max = get_local_range(anchor_spot, max_distance)
 
+    # -----------------------------
+    # GLOBAL GAMMA KEY
+    # -----------------------------
     gamma_key_global = None
     if not combined_all.empty:
         combined_all["abs_weighted_gex"] = combined_all["weighted_gex"].abs()
@@ -133,6 +152,9 @@ def get_gamma_levels(
                 global_curve.loc[global_curve["abs_weighted_gex"].idxmax(), "strike"]
             )
 
+    # -----------------------------
+    # LOCAL GAMMA KEY
+    # -----------------------------
     gamma_key_local = None
     local_curve_for_key = combined_all[
         (combined_all["strike"] >= search_min) & (combined_all["strike"] <= search_max)
@@ -153,8 +175,11 @@ def get_gamma_levels(
 
     key_level = gamma_key_local if gamma_key_local is not None else gamma_key_global
 
+    # Regime should still use LIVE current spot against the flip
     regime = infer_gamma_regime_from_net_gex(float(live_spot), gamma_flip, total_net_gex)
 
+    # local GEX curve for plotting / table
+    # anchored to OI fixed spot so it matches OI range
     local_gex_curve = combined_all[
         (combined_all["strike"] >= search_min) & (combined_all["strike"] <= search_max)
     ].copy()
@@ -162,9 +187,8 @@ def get_gamma_levels(
     return {
         "model": "GAMMA",
         "ticker": ticker_symbol,
-        "spot": round(float(live_spot), 2),
-        "anchor_spot": round(float(anchor_spot), 2),
-        "strike_step": strike_step,
+        "spot": round(float(live_spot), 2), # keep LIVE spot for the chart line
+        "anchor_spot": round(float(anchor_spot), 2), # OI-fixed anchor used for range selection
         "expirations_used": expirations,
         "weights_used": weights,
         "search_range": [round(search_min, 2), round(search_max, 2)],

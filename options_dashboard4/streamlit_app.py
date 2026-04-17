@@ -1,5 +1,4 @@
 import json
-import math
 import os
 from datetime import timedelta
 
@@ -119,9 +118,9 @@ def calculate_regression_from_points(x1, x2, y1, y2):
 
 
 def get_futures_equivalent_label(ticker):
-    if ticker in ["SPY", "SPX"]:
+    if ticker == "SPY":
         return "ES Equivalent"
-    if ticker in ["QQQ", "NDX"]:
+    if ticker == "QQQ":
         return "MNQ Equivalent"
     return "Futures Equivalent"
 
@@ -130,14 +129,14 @@ def calculate_futures_equivalent(ticker, x_value, settings_dict):
     if pd.isna(x_value):
         return None
 
-    if ticker in ["SPY", "SPX"]:
+    if ticker == "SPY":
         a, b = calculate_regression_from_points(
             settings_dict.get("spy_x1", 0.0),
             settings_dict.get("spy_x2", 0.0),
             settings_dict.get("spy_y1", 0.0),
             settings_dict.get("spy_y2", 0.0),
         )
-    elif ticker in ["QQQ", "NDX"]:
+    elif ticker == "QQQ":
         a, b = calculate_regression_from_points(
             settings_dict.get("qqq_x1", 0.0),
             settings_dict.get("qqq_x2", 0.0),
@@ -153,52 +152,29 @@ def calculate_futures_equivalent(ticker, x_value, settings_dict):
     return round(a + b * float(x_value), 2)
 
 
-def get_visual_strike_step(ticker: str, gamma: dict | None = None) -> float:
-    if gamma is not None:
-        step = gamma.get("strike_step")
-        if step is not None:
-            try:
-                step = float(step)
-                if step > 0:
-                    return step
-            except Exception:
-                pass
+def slice_history_last_hours(hist_df: pd.DataFrame, hours: int) -> pd.DataFrame:
+    if hist_df.empty:
+        return hist_df
 
-    if ticker == "SPX":
-        return 5.0
-    if ticker == "NDX":
-        return 10.0
-    return 1.0
+    df = hist_df.copy()
+    if "datetime" not in df.columns:
+        return df
+
+    df = df.sort_values("datetime").reset_index(drop=True)
+    end_time = df["datetime"].max()
+    start_time = end_time - pd.Timedelta(hours=hours)
+    df = df[df["datetime"] >= start_time].copy()
+    return df.reset_index(drop=True)
 
 
-def get_aligned_y_range(
-    hist_df: pd.DataFrame,
-    levels_df: pd.DataFrame,
-    current_spot: float,
-    gamma_curve_records=None,
-    strike_step: float = 1.0,
-):
+def get_aligned_y_range(hist_df: pd.DataFrame, levels_df: pd.DataFrame, current_spot: float):
     values = []
-    local_min = None
-    local_max = None
-
-    curve_df = pd.DataFrame(gamma_curve_records or [])
-    if not curve_df.empty and "strike" in curve_df.columns:
-        curve_strikes = pd.to_numeric(curve_df["strike"], errors="coerce").dropna()
-        if not curve_strikes.empty:
-            local_min = float(curve_strikes.min())
-            local_max = float(curve_strikes.max())
-            values.extend(curve_strikes.tolist())
-
-    if levels_df is not None and not levels_df.empty and "level" in levels_df.columns:
-        level_vals = pd.to_numeric(levels_df["level"], errors="coerce").dropna()
-        if local_min is not None and local_max is not None:
-            level_vals = level_vals[(level_vals >= local_min) & (level_vals <= local_max)]
-        values.extend(level_vals.tolist())
 
     if hist_df is not None and not hist_df.empty and "close" in hist_df.columns:
-        price_vals = pd.to_numeric(hist_df["close"], errors="coerce").dropna()
-        values.extend(price_vals.tolist())
+        values.extend(pd.to_numeric(hist_df["close"], errors="coerce").dropna().tolist())
+
+    if levels_df is not None and not levels_df.empty and "level" in levels_df.columns:
+        values.extend(pd.to_numeric(levels_df["level"], errors="coerce").dropna().tolist())
 
     if current_spot is not None:
         values.append(float(current_spot))
@@ -206,35 +182,29 @@ def get_aligned_y_range(
     if not values:
         return None
 
-    step = float(strike_step) if strike_step else 1.0
-    lower = min(values)
-    upper = max(values)
+    y_min = min(values)
+    y_max = max(values)
+    spread = y_max - y_min
 
-    if upper <= lower:
-        pad = step
+    if spread <= 0:
+        pad = max(abs(y_max) * 0.01, 1.0)
     else:
-        pad = max(step, (upper - lower) * 0.05)
+        pad = spread * 0.08
 
-    y_min = step * math.floor((lower - pad) / step)
-    y_max = step * math.ceil((upper + pad) / step)
-
-    return [round(y_min, 2), round(y_max, 2)]
+    return [round(y_min - pad, 2), round(y_max + pad, 2)]
 
 
-
-def get_shared_yaxis_config(forced_y_range, strike_step: float = 1.0):
+def get_shared_yaxis_config(forced_y_range):
     if forced_y_range is None:
         return {}
 
-    step = float(strike_step) if strike_step else 1.0
     y_min, y_max = forced_y_range
-
     return {
         "range": forced_y_range,
         "tickmode": "linear",
-        "tick0": step * math.floor(float(y_min) / step),
-        "dtick": step,
-        "fixedrange": False,
+        "tick0": int(y_min // 5) * 5,
+        "dtick": 5,
+        "fixedrange": True,
     }
 
 
@@ -428,60 +398,9 @@ def build_hybrid_subplot_figure(
         ],
     )
 
-    current_spot = float(gamma["spot"])
-    strike_step = get_visual_strike_step(ticker, gamma)
-
-    curve = pd.DataFrame(gamma.get("gex_curve", []))
-    if curve.empty:
-        curve = pd.DataFrame(gamma.get("gex_curve_wide", []))
-
-    if curve.empty:
-        return fig, pd.DataFrame()
-
-    curve = curve.sort_values("strike").reset_index(drop=True)
-
-    def classify_gamma_side(weighted_gex, strike, spot):
-        if pd.isna(weighted_gex) or pd.isna(strike) or pd.isna(spot):
-            return "OTHER"
-
-        gex = float(weighted_gex)
-        strike = float(strike)
-        spot = float(spot)
-
-        if gex > 0:
-            if strike < spot:
-                return "SUPPORT"
-            elif strike > spot:
-                return "RESISTANCE"
-            return "SUPPORT"
-
-        if gex < 0:
-            if strike < spot:
-                return "BREAKOUT-PRONE SUPPORT"
-            elif strike > spot:
-                return "BREAKOUT-PRONE RESISTANCE"
-            return "BREAKOUT-PRONE"
-
-        return "OTHER"
-
-    curve["gamma_side"] = curve.apply(
-        lambda row: classify_gamma_side(row["weighted_gex"], row["strike"], current_spot),
-        axis=1,
-    )
-    curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
-
-    local_levels_df = levels_df.copy()
-    if not local_levels_df.empty and "level" in local_levels_df.columns:
-        local_levels_df["level"] = pd.to_numeric(local_levels_df["level"], errors="coerce")
-        local_levels_df = local_levels_df.dropna(subset=["level"])
-
-        local_min = float(curve["strike"].min())
-        local_max = float(curve["strike"].max())
-
-        local_levels_df = local_levels_df[
-            (local_levels_df["level"] >= local_min) & (local_levels_df["level"] <= local_max)
-        ].copy()
-
+    # -----------------------------
+    # Top-left: price + OI levels
+    # -----------------------------
     fig.add_trace(
         go.Scatter(
             x=hist_df["datetime"],
@@ -539,7 +458,7 @@ def build_hybrid_subplot_figure(
 
             current_day += timedelta(days=1)
 
-    for _, row in local_levels_df.iterrows():
+    for _, row in levels_df.iterrows():
         level = float(row["level"])
         side = str(row.get("side", ""))
         line_color = "#00C853" if side == "SUPPORT" else "#D50000"
@@ -567,6 +486,7 @@ def build_hybrid_subplot_figure(
             yanchor="middle",
         )
 
+    current_spot = float(gamma["spot"])
     fig.add_hline(
         y=current_spot,
         line_color="#64B5F6",
@@ -588,6 +508,52 @@ def build_hybrid_subplot_figure(
         xanchor="left",
         yanchor="middle",
     )
+
+    # -----------------------------
+    # Top-right: GEX bars
+    # -----------------------------
+    curve = pd.DataFrame(gamma.get("gex_curve", []))
+    if curve.empty:
+        curve = pd.DataFrame(gamma.get("gex_curve_wide", []))
+
+    if curve.empty:
+        return fig, pd.DataFrame()
+
+    curve = curve.sort_values("strike").reset_index(drop=True)
+
+    def classify_gamma_side(weighted_gex, strike, spot):
+        if pd.isna(weighted_gex) or pd.isna(strike) or pd.isna(spot):
+            return "OTHER"
+
+        gex = float(weighted_gex)
+        strike = float(strike)
+        spot = float(spot)
+
+        if gex > 0:
+            if strike < spot:
+                return "SUPPORT"
+            elif strike > spot:
+                return "RESISTANCE"
+            return "SUPPORT"
+
+        if gex < 0:
+            if strike < spot:
+                return "BREAKOUT-PRONE SUPPORT"
+            elif strike > spot:
+                return "BREAKOUT-PRONE RESISTANCE"
+            return "BREAKOUT-PRONE"
+
+        return "OTHER"
+
+    curve["gamma_side"] = curve.apply(
+        lambda row: classify_gamma_side(
+            row["weighted_gex"],
+            row["strike"],
+            current_spot,
+        ),
+        axis=1,
+    )
+    curve["abs_weighted_gex"] = curve["weighted_gex"].abs()
 
     colors = ["#00C853" if float(v) >= 0 else "#D50000" for v in curve["weighted_gex"]]
 
@@ -717,7 +683,7 @@ def build_hybrid_subplot_figure(
             x=label_x,
             y=strike,
             xref="x2",
-            yref="y2",
+            yref="y",
             text=txt,
             showarrow=False,
             font=dict(color=color, size=11),
@@ -726,6 +692,9 @@ def build_hybrid_subplot_figure(
             yanchor="middle",
         )
 
+    # -----------------------------
+    # Bottom: Abs VEX + Net VEX Ratio
+    # -----------------------------
     if vex_history_df is not None and not vex_history_df.empty:
         vex_history_df = vex_history_df.sort_values("datetime").reset_index(drop=True)
 
@@ -787,22 +756,10 @@ def build_hybrid_subplot_figure(
             col=1,
         )
 
-    shared_yaxis = get_shared_yaxis_config(forced_y_range, strike_step=strike_step)
+    shared_yaxis = get_shared_yaxis_config(forced_y_range)
 
-    fig.update_yaxes(
-        **shared_yaxis,
-        showticklabels=True,
-        row=1,
-        col=1,
-    )
-
-    fig.update_yaxes(
-        **shared_yaxis,
-        showticklabels=True,
-        matches="y",
-        row=1,
-        col=2,
-    )
+    fig.update_yaxes(shared_yaxis, row=1, col=1)
+    fig.update_yaxes(shared_yaxis, row=1, col=2)
 
     fig.update_xaxes(
         title_text="Time",
@@ -2029,8 +1986,8 @@ st.sidebar.header("Settings")
 
 tickers = st.sidebar.multiselect(
     "Tickers",
-    options=["SPY", "QQQ", "SPX", "NDX"],
-    default=settings["tickers"] if settings["tickers"] else ["SPY", "QQQ", "SPX", "NDX"],
+    options=["SPY", "QQQ"],
+    default=settings["tickers"] if settings["tickers"] else ["SPY", "QQQ"],
 )
 
 weights_text = st.sidebar.text_input(
@@ -2267,8 +2224,6 @@ with tab1:
                 hist_df=hist_16h,
                 levels_df=levels_df,
                 current_spot=float(gamma["spot"]),
-                gamma_curve_records=gamma.get("gex_curve", []),
-                strike_step=get_visual_strike_step(ticker, gamma),
             )
 
             hybrid_fig, curve_df = build_hybrid_subplot_figure(
