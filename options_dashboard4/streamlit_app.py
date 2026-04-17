@@ -175,21 +175,17 @@ def get_aligned_y_range(
 ):
     values = []
 
-    # Price history
     if hist_df is not None and not hist_df.empty and "close" in hist_df.columns:
         values.extend(pd.to_numeric(hist_df["close"], errors="coerce").dropna().tolist())
 
-    # OI / confluence levels
     if levels_df is not None and not levels_df.empty and "level" in levels_df.columns:
         values.extend(pd.to_numeric(levels_df["level"], errors="coerce").dropna().tolist())
 
-    # Local GEX curve strikes (this is the important fix)
     if gamma_curve_records:
         curve_df = pd.DataFrame(gamma_curve_records)
         if not curve_df.empty and "strike" in curve_df.columns:
             values.extend(pd.to_numeric(curve_df["strike"], errors="coerce").dropna().tolist())
 
-    # Current spot
     if current_spot is not None:
         values.append(float(current_spot))
 
@@ -207,9 +203,46 @@ def get_aligned_y_range(
 
     return [round(y_min - pad, 2), round(y_max + pad, 2)]
 
+def get_preferred_strike_step(levels_df: pd.DataFrame = None, gamma_curve_records=None):
+    candidates = []
 
+    if levels_df is not None and not levels_df.empty and "level" in levels_df.columns:
+        lvl_vals = sorted(pd.to_numeric(levels_df["level"], errors="coerce").dropna().unique().tolist())
+        if len(lvl_vals) >= 2:
+            diffs = [round(lvl_vals[i] - lvl_vals[i - 1], 6) for i in range(1, len(lvl_vals))]
+            diffs = [d for d in diffs if d > 0]
+            candidates.extend(diffs)
 
-def get_shared_yaxis_config(forced_y_range):
+    if gamma_curve_records:
+        curve_df = pd.DataFrame(gamma_curve_records)
+        if not curve_df.empty and "strike" in curve_df.columns:
+            strike_vals = sorted(pd.to_numeric(curve_df["strike"], errors="coerce").dropna().unique().tolist())
+            if len(strike_vals) >= 2:
+                diffs = [round(strike_vals[i] - strike_vals[i - 1], 6) for i in range(1, len(strike_vals))]
+                diffs = [d for d in diffs if d > 0]
+                candidates.extend(diffs)
+
+    if not candidates:
+        return 5
+
+    candidates = sorted(candidates)
+    step = candidates[0]
+
+    if step <= 1:
+        return 1
+    if step <= 2:
+        return 2
+    if step <= 5:
+        return 5
+    if step <= 10:
+        return 10
+    if step <= 25:
+        return 25
+    if step <= 50:
+        return 50
+    return 100
+
+def get_shared_yaxis_config(forced_y_range, levels_df=None, gamma_curve_records=None):
     if forced_y_range is None:
         return {
             "fixedrange": False,
@@ -218,22 +251,22 @@ def get_shared_yaxis_config(forced_y_range):
     y_min, y_max = forced_y_range
     span = float(y_max) - float(y_min)
 
-    if span <= 20:
-        dtick = 1
-    elif span <= 40:
-        dtick = 2
-    elif span <= 100:
-        dtick = 5
-    elif span <= 200:
-        dtick = 10
-    elif span <= 500:
-        dtick = 25
-    elif span <= 1000:
-        dtick = 50
-    else:
-        dtick = 100
+    strike_step = get_preferred_strike_step(
+        levels_df=levels_df,
+        gamma_curve_records=gamma_curve_records,
+    )
 
-    tick0 = int(y_min // dtick) * dtick
+    approx_tick_count = 12
+    raw_dtick = max(strike_step, span / approx_tick_count if span > 0 else strike_step)
+
+    allowed_steps = [1, 2, 5, 10, 25, 50, 100, 250, 500]
+    dtick = allowed_steps[-1]
+    for step in allowed_steps:
+        if step >= raw_dtick and step >= strike_step:
+            dtick = step
+            break
+
+    tick0 = int(y_min // strike_step) * strike_step
 
     return {
         "range": forced_y_range,
@@ -242,6 +275,7 @@ def get_shared_yaxis_config(forced_y_range):
         "dtick": dtick,
         "fixedrange": False,
     }
+
 
 
 def compute_abs_vex(levels_df: pd.DataFrame) -> float:
@@ -792,8 +826,11 @@ def build_hybrid_subplot_figure(
             col=1,
         )
 
-    shared_yaxis = get_shared_yaxis_config(forced_y_range)
-
+    shared_yaxis = get_shared_yaxis_config(
+        forced_y_range,
+        levels_df=levels_df,
+        gamma_curve_records=gamma.get("gex_curve", []),
+    )   
     # Left chart: show Y-axis labels normally
     fig.update_yaxes(
         **shared_yaxis,
