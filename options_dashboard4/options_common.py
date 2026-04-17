@@ -10,6 +10,20 @@ from options_config import NY_TIMEZONE
 
 NY_TZ = ZoneInfo(NY_TIMEZONE)
 
+def map_ticker_for_sources(ticker: str):
+    """
+    Returns:
+    - yf_symbol (for price)
+    - polygon_symbol (for options)
+    """
+    mapping = {
+        "SPY": ("SPY", "SPY"),
+        "QQQ": ("QQQ", "QQQ"),
+        "SPX": ("^SPX", "I:SPX"),
+        "NDX": ("^NDX", "I:NDX"),
+    }
+
+    return mapping.get(ticker, (ticker, ticker))
 
 def get_api_key() -> str:
     api_key = os.getenv("POLYGON_API_KEY") or os.getenv("MASSIVE_API_KEY")
@@ -48,8 +62,10 @@ def _download_yf_intraday(
     interval: str,
     prepost: bool,
 ) -> pd.DataFrame:
+    yf_symbol, _ = map_ticker_for_sources(ticker_symbol)
+
     df = yf.download(
-        tickers=ticker_symbol,
+        tickers=yf_symbol,
         period=period,
         interval=interval,
         auto_adjust=False,
@@ -64,7 +80,7 @@ def _download_yf_intraday(
     df = df.copy()
 
     if not isinstance(df.index, pd.DatetimeIndex):
-        raise ValueError(f"Unexpected yfinance index format for {ticker_symbol}")
+        raise ValueError(f"Unexpected yfinance index format for {ticker_symbol} ({yf_symbol})")
 
     df = df.reset_index()
 
@@ -84,7 +100,7 @@ def _download_yf_intraday(
     elif "date" in df.columns:
         dt_col = "date"
     else:
-        raise ValueError(f"Unexpected yfinance dataframe format for {ticker_symbol}")
+        raise ValueError(f"Unexpected yfinance dataframe format for {ticker_symbol} ({yf_symbol})")
 
     df["datetime"] = pd.to_datetime(df[dt_col], utc=True).dt.tz_convert(NY_TZ)
 
@@ -99,7 +115,6 @@ def _download_yf_intraday(
 
     out = out.dropna(subset=["datetime", "close"]).sort_values("datetime").reset_index(drop=True)
     return out
-
 
 def get_intraday_history_last_24h_extended(ticker_symbol: str) -> pd.DataFrame:
     """
@@ -188,9 +203,11 @@ def get_option_chain_snapshot_df(
     strike_price_lte: float | None = None,
 ) -> pd.DataFrame:
     """
-    Options data still comes from Polygon/Massive.
+    Options data comes from Polygon/Massive.
+    Uses mapped index symbols for SPX/NDX.
     """
     client = get_client()
+    _, polygon_symbol = map_ticker_for_sources(ticker_symbol)
 
     params = {"limit": 250}
     if strike_price_gte is not None:
@@ -199,7 +216,7 @@ def get_option_chain_snapshot_df(
         params["strike_price.lte"] = strike_price_lte
 
     rows = []
-    for item in client.list_snapshot_options_chain(ticker_symbol, params=params):
+    for item in client.list_snapshot_options_chain(polygon_symbol, params=params):
         d = obj_to_dict(item)
         details = d.get("details", {}) or {}
         greeks = d.get("greeks", {}) or {}
@@ -226,7 +243,7 @@ def get_option_chain_snapshot_df(
         )
 
     if not rows:
-        raise ValueError(f"No option chain snapshot rows for {ticker_symbol}")
+        raise ValueError(f"No option chain snapshot rows for {ticker_symbol} ({polygon_symbol})")
 
     return pd.DataFrame(rows)
 

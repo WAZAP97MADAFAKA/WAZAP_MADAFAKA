@@ -118,9 +118,9 @@ def calculate_regression_from_points(x1, x2, y1, y2):
 
 
 def get_futures_equivalent_label(ticker):
-    if ticker == "SPY":
+    if ticker in ["SPY", "SPX"]:
         return "ES Equivalent"
-    if ticker == "QQQ":
+    if ticker in ["QQQ", "NDX"]:
         return "MNQ Equivalent"
     return "Futures Equivalent"
 
@@ -129,14 +129,14 @@ def calculate_futures_equivalent(ticker, x_value, settings_dict):
     if pd.isna(x_value):
         return None
 
-    if ticker == "SPY":
+    if ticker in ["SPY", "SPX"]:
         a, b = calculate_regression_from_points(
             settings_dict.get("spy_x1", 0.0),
             settings_dict.get("spy_x2", 0.0),
             settings_dict.get("spy_y1", 0.0),
             settings_dict.get("spy_y2", 0.0),
         )
-    elif ticker == "QQQ":
+    elif ticker in ["QQQ", "NDX"]:
         a, b = calculate_regression_from_points(
             settings_dict.get("qqq_x1", 0.0),
             settings_dict.get("qqq_x2", 0.0),
@@ -1986,8 +1986,8 @@ st.sidebar.header("Settings")
 
 tickers = st.sidebar.multiselect(
     "Tickers",
-    options=["SPY", "QQQ"],
-    default=settings["tickers"] if settings["tickers"] else ["SPY", "QQQ"],
+    options=["SPY", "QQQ", "SPX", "NDX"],
+    default=settings["tickers"] if settings["tickers"] else ["SPY", "QQQ", "SPX", "NDX"],
 )
 
 weights_text = st.sidebar.text_input(
