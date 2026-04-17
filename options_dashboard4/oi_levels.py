@@ -5,7 +5,7 @@ from options_common import (
     get_weighted_option_data_polygon,
     filter_local_calls,
     filter_local_puts,
-    get_local_search_range_from_filtered,
+    get_local_range,
 )
 
 
@@ -19,15 +19,33 @@ def get_oi_levels(
     if weights is None:
         weights = EXPIRATION_WEIGHTS
 
-    spot, expirations, combined_calls, combined_puts, strike_step = get_weighted_option_data_polygon(
+    result = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
         fixed_spot=fixed_spot,
         max_distance=max_distance,
     )
 
-    local_calls = filter_local_calls(combined_calls, spot, max_distance, strike_step=strike_step)
-    local_puts = filter_local_puts(combined_puts, spot, max_distance, strike_step=strike_step)
+    # Supports both old and new return signatures
+    if len(result) == 4:
+        spot, expirations, combined_calls, combined_puts = result
+        strike_step = 1.0
+    else:
+        spot, expirations, combined_calls, combined_puts, strike_step = result
+
+    local_calls = filter_local_calls(
+        combined_calls,
+        spot,
+        max_distance,
+        strike_step=strike_step,
+    )
+
+    local_puts = filter_local_puts(
+        combined_puts,
+        spot,
+        max_distance,
+        strike_step=strike_step,
+    )
 
     top_resistances = (
         local_calls.sort_values("weighted_open_interest", ascending=False)
@@ -59,16 +77,20 @@ def get_oi_levels(
     else:
         key_level = None
 
-    search_min, search_max = get_local_range(spot, max_distance, strike_step=strike_step)
+    search_min, search_max = get_local_range(
+        spot,
+        max_distance,
+        strike_step=strike_step,
+    )
 
     return {
         "model": "OI",
         "ticker": ticker_symbol,
-        "spot": round(spot, 2),
-        "strike_step": strike_step,
+        "spot": round(float(spot), 2),
+        "strike_step": float(strike_step),
         "expirations_used": expirations,
         "weights_used": weights,
-        "search_range": [round(search_min, 2), round(search_max, 2)],
+        "search_range": [round(float(search_min), 2), round(float(search_max), 2)],
         "key_level": key_level,
         "top_resistances": top_resistances[
             ["strike", "weighted_open_interest", "total_open_interest", "weighted_volume", "total_volume"]
