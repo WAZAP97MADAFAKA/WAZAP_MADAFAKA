@@ -5,8 +5,7 @@ from options_common import (
     get_weighted_option_data_polygon,
     filter_local_calls,
     filter_local_puts,
-    filter_local_curve,
-    get_local_search_range_from_filtered,
+    get_local_range,
 )
 
 
