@@ -57,7 +57,7 @@ def get_gamma_levels(
     # -----------------------------
     # Get LIVE current spot first
     # -----------------------------
-    live_spot, expirations_live, _, _ = get_weighted_option_data_polygon(
+    live_spot, expirations_live, _, _, live_strike_step = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
         fixed_spot=None,
@@ -74,15 +74,15 @@ def get_gamma_levels(
     # Local window for visible trading levels
     # anchored to OI fixed spot
     # -----------------------------
-    _, expirations, combined_calls, combined_puts = get_weighted_option_data_polygon(
+    _, expirations, combined_calls, combined_puts, strike_step = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
         fixed_spot=anchor_spot,
         max_distance=max_distance,
     )
 
-    local_calls = filter_local_calls(combined_calls, anchor_spot, max_distance)
-    local_puts = filter_local_puts(combined_puts, anchor_spot, max_distance)
+    local_calls = filter_local_calls(combined_calls, anchor_spot, max_distance, strike_step=strike_step)
+    local_puts = filter_local_puts(combined_puts, anchor_spot, max_distance, strike_step=strike_step)
 
     top_resistances = (
         local_calls.sort_values("weighted_gex", ascending=False)
@@ -112,7 +112,7 @@ def get_gamma_levels(
     # Wider scan for flip detection + full GEX bar chart
     # also anchored to OI fixed spot
     # -----------------------------
-    _, _, wide_calls, wide_puts = get_weighted_option_data_polygon(
+    _, _, wide_calls, wide_puts, wide_strike_step = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
         fixed_spot=anchor_spot,
@@ -137,7 +137,7 @@ def get_gamma_levels(
     gamma_flip = estimate_gamma_flip(combined_all)
     total_net_gex = float(combined_all["weighted_gex"].sum()) if not combined_all.empty else 0.0
 
-    search_min, search_max = get_local_range(anchor_spot, max_distance)
+    search_min, search_max = get_local_range(anchor_spot, max_distance, strike_step=strike_step)
 
     # -----------------------------
     # GLOBAL GAMMA KEY
@@ -189,6 +189,7 @@ def get_gamma_levels(
         "ticker": ticker_symbol,
         "spot": round(float(live_spot), 2), # keep LIVE spot for the chart line
         "anchor_spot": round(float(anchor_spot), 2), # OI-fixed anchor used for range selection
+        "strike_step": float(strike_step),
         "expirations_used": expirations,
         "weights_used": weights,
         "search_range": [round(search_min, 2), round(search_max, 2)],

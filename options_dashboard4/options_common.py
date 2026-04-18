@@ -11,6 +11,57 @@ from options_config import NY_TIMEZONE
 NY_TZ = ZoneInfo(NY_TIMEZONE)
 
 
+def get_price_ticker_symbol(ticker_symbol: str) -> str:
+    mapping = {
+        "SPX": "^SPX",
+        "NDX": "^NDX",
+    }
+    return mapping.get(ticker_symbol, ticker_symbol)
+
+
+def get_options_ticker_symbol(ticker_symbol: str) -> str:
+    mapping = {
+        "SPX": "I:SPX",
+        "NDX": "I:NDX",
+    }
+    return mapping.get(ticker_symbol, ticker_symbol)
+
+
+def get_default_strike_step(ticker_symbol: str) -> float:
+    if ticker_symbol == "SPX":
+        return 5.0
+    if ticker_symbol == "NDX":
+        return 10.0
+    return 1.0
+
+
+def infer_strike_step(chain_df: pd.DataFrame, ticker_symbol: str) -> float:
+    fallback = get_default_strike_step(ticker_symbol)
+
+    if chain_df is None or chain_df.empty or "strike" not in chain_df.columns:
+        return fallback
+
+    strikes = sorted(pd.to_numeric(chain_df["strike"], errors="coerce").dropna().unique().tolist())
+    if len(strikes) < 2:
+        return fallback
+
+    diffs = []
+    for i in range(1, len(strikes)):
+        diff = round(float(strikes[i]) - float(strikes[i - 1]), 6)
+        if diff > 0:
+            diffs.append(diff)
+
+    if not diffs:
+        return fallback
+
+    mode_vals = pd.Series(diffs).mode()
+    if not mode_vals.empty:
+        return float(mode_vals.iloc[0])
+
+    return float(min(diffs))
+
+
+
 def get_api_key() -> str:
     api_key = os.getenv("POLYGON_API_KEY") or os.getenv("MASSIVE_API_KEY")
     if not api_key:
@@ -48,8 +99,10 @@ def _download_yf_intraday(
     interval: str,
     prepost: bool,
 ) -> pd.DataFrame:
+    yf_ticker = get_price_ticker_symbol(ticker_symbol)
+
     df = yf.download(
-        tickers=ticker_symbol,
+        tickers=yf_ticker,
         period=period,
         interval=interval,
         auto_adjust=False,
@@ -191,6 +244,7 @@ def get_option_chain_snapshot_df(
     Options data still comes from Polygon/Massive.
     """
     client = get_client()
+    options_ticker = get_options_ticker_symbol(ticker_symbol)
 
     params = {"limit": 250}
     if strike_price_gte is not None:
@@ -199,7 +253,7 @@ def get_option_chain_snapshot_df(
         params["strike_price.lte"] = strike_price_lte
 
     rows = []
-    for item in client.list_snapshot_options_chain(ticker_symbol, params=params):
+    for item in client.list_snapshot_options_chain(options_ticker, params=params):
         d = obj_to_dict(item)
         details = d.get("details", {}) or {}
         greeks = d.get("greeks", {}) or {}
@@ -250,17 +304,22 @@ def get_weighted_option_data_polygon(
     """
     spot = float(fixed_spot) if fixed_spot is not None else get_current_spot_price(ticker_symbol)
 
+    provisional_step = get_default_strike_step(ticker_symbol)
+
     strike_gte = None
     strike_lte = None
     if max_distance is not None:
-        strike_gte = max(0.01, spot - (max_distance * 1.5))
-        strike_lte = spot + (max_distance * 1.5)
+        query_distance = float(max_distance) * float(provisional_step) * 1.5
+        strike_gte = max(0.01, spot - query_distance)
+        strike_lte = spot + query_distance
 
     chain_df = get_option_chain_snapshot_df(
         ticker_symbol=ticker_symbol,
         strike_price_gte=strike_gte,
         strike_price_lte=strike_lte,
     )
+
+    strike_step = infer_strike_step(chain_df, ticker_symbol)
 
     expirations = get_first_n_expirations_from_chain_df(chain_df, len(weights))
     weight_map = {exp: w for exp, w in zip(expirations, weights)}
@@ -322,22 +381,31 @@ def get_weighted_option_data_polygon(
         .reset_index(drop=True)
     )
 
-    return spot, expirations, combined_calls, combined_puts
+    return spot, expirations, combined_calls, combined_puts, strike_step
+
+def get_local_range(spot: float, max_distance: float, strike_step: float = 1.0):
+    distance = float(max_distance) * float(strike_step)
+    return spot - distance, spot + distance
 
 
-def get_local_range(spot: float, max_distance: float):
-    return spot - max_distance, spot + max_distance
-
-
-def filter_local_calls(combined_calls: pd.DataFrame, spot: float, max_distance: float) -> pd.DataFrame:
-    _, max_strike = get_local_range(spot, max_distance)
+def filter_local_calls(
+    combined_calls: pd.DataFrame,
+    spot: float,
+    max_distance: float,
+    strike_step: float = 1.0,
+) -> pd.DataFrame:
+    _, max_strike = get_local_range(spot, max_distance, strike_step)
     return combined_calls[(combined_calls["strike"] > spot) & (combined_calls["strike"] <= max_strike)].copy()
 
 
-def filter_local_puts(combined_puts: pd.DataFrame, spot: float, max_distance: float) -> pd.DataFrame:
-    min_strike, _ = get_local_range(spot, max_distance)
+def filter_local_puts(
+    combined_puts: pd.DataFrame,
+    spot: float,
+    max_distance: float,
+    strike_step: float = 1.0,
+) -> pd.DataFrame:
+    min_strike, _ = get_local_range(spot, max_distance, strike_step)
     return combined_puts[(combined_puts["strike"] < spot) & (combined_puts["strike"] >= min_strike)].copy()
-
 
 def choose_nearest_key_level(levels_df: pd.DataFrame, spot: float, score_column: str) -> float | None:
     if levels_df.empty:
