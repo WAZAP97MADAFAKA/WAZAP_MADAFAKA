@@ -410,81 +410,69 @@ def build_hybrid_subplot_figure(
         curve["dex_ratio"] = (curve["weighted_dex"] / dex_abs_sum).clip(-1, 1)
 
     # -----------------------------
-    # Top-left: price + DEX by strike
+    # Top-left: price + DEX heatmap background
     # -----------------------------
+    if hist_df is None or hist_df.empty:
+        x_min = pd.Timestamp.now() - pd.Timedelta(hours=1)
+        x_max = pd.Timestamp.now()
+    else:
+        x_min = hist_df["datetime"].min()
+        x_max = hist_df["datetime"].max()
+
+    # DEX background:
+    # Positive DEX = Deep Blue
+    # Zero DEX = White
+    # Negative DEX = Deep Red
+    #
+    # DEX Ratio per strike = weighted_dex_at_strike / sum(abs(weighted_dex_at_strike))
+    # This keeps the color scale bounded from -1 to +1.
+    heat_curve = curve.copy().sort_values("strike").reset_index(drop=True)
+    heat_curve["dex_ratio"] = pd.to_numeric(
+        heat_curve.get("dex_ratio", 0.0), errors="coerce"
+    ).fillna(0.0).clip(-1.0, 1.0)
+
+    heat_x = [x_min, x_max]
+    heat_y = heat_curve["strike"].astype(float).tolist()
+    heat_z = [[float(r), float(r)] for r in heat_curve["dex_ratio"].tolist()]
+
+    fig.add_trace(
+        go.Heatmap(
+            x=heat_x,
+            y=heat_y,
+            z=heat_z,
+            zmin=-1,
+            zmax=1,
+            colorscale=[
+                [0.0, "rgb(120,0,0)"],      # -1 deep red
+                [0.35, "rgb(255,170,170)"],
+                [0.50, "rgb(255,255,255)"], # 0 white
+                [0.65, "rgb(170,205,255)"],
+                [1.0, "rgb(0,0,170)"],      # +1 deep blue
+            ],
+            opacity=0.72,
+            showscale=False,
+            hovertemplate=(
+                "Strike %{y}<br>"
+                "DEX Ratio %{z:.6f}<extra></extra>"
+            ),
+            name="DEX Background",
+        ),
+        row=1,
+        col=1,
+    )
+
+    # Price line over the DEX background.
     fig.add_trace(
         go.Scatter(
             x=hist_df["datetime"],
             y=hist_df["close"],
             mode="lines",
             name=f"{ticker} Price",
-            line=dict(width=2, color="#90CAF9"),
+            line=dict(width=2.4, color="#90CAF9"),
         ),
         row=1,
         col=1,
     )
-
-    if not hist_df.empty:
-        x_min = hist_df["datetime"].min()
-        x_max = hist_df["datetime"].max()
-        start_day = x_min.normalize()
-        end_day = x_max.normalize()
-
-        current_day = start_day
-        while current_day <= end_day:
-            if current_day.weekday() < 5:
-                windows = [
-                    (current_day, current_day + timedelta(hours=4), "rgba(80, 80, 120, 0.12)"),
-                    (current_day + timedelta(hours=4), current_day + timedelta(hours=9, minutes=30), "rgba(70, 120, 180, 0.12)"),
-                    (current_day + timedelta(hours=16), current_day + timedelta(hours=20), "rgba(150, 90, 170, 0.12)"),
-                    (current_day + timedelta(hours=20), current_day + timedelta(days=1), "rgba(80, 80, 120, 0.12)"),
-                ]
-                for x0, x1, color in windows:
-                    left = max(x0, x_min)
-                    right = min(x1, x_max)
-                    if left < right:
-                        fig.add_vrect(
-                            x0=left,
-                            x1=right,
-                            fillcolor=color,
-                            opacity=1,
-                            line_width=0,
-                            layer="below",
-                            row=1,
-                            col=1,
-                        )
-            current_day += timedelta(days=1)
-
-    # DEX lines on price chart. OI level lines are intentionally removed.
-    for _, row in curve.iterrows():
-        strike = float(row["strike"])
-        dex_ratio = float(row.get("dex_ratio", 0.0))
-        dex_value = float(row.get("weighted_dex", 0.0))
-        color = dex_ratio_to_color(dex_ratio)
-        width = max(1.0, min(7.0, 1.0 + abs(dex_ratio) * 80.0))
-
-        fig.add_hline(
-            y=strike,
-            line_color=color,
-            line_width=width,
-            line_dash="solid",
-            opacity=max(0.25, min(1.0, 0.35 + abs(dex_ratio) * 12.0)),
-            row=1,
-            col=1,
-        )
-
-        fig.add_annotation(
-            xref="paper",
-            yref="y",
-            x=0.01,
-            y=strike,
-            text=f"DEX {dex_value:,.0f}",
-            showarrow=False,
-            font=dict(size=9, color=color),
-            bgcolor="rgba(0,0,0,0.25)",
-            xanchor="left",
-            yanchor="middle",
-        )
 
     fig.add_hline(
         y=current_spot,
@@ -845,7 +833,7 @@ st.sidebar.write(status.get("last_refresh_ny", "No refresh yet"))
 
 st.header("Hybrid View")
 st.write(
-    "Price, GEX, and OI are aligned by strike. DEX is displayed on the price chart by strike using a red-white-blue intensity scale."
+    "Price, GEX, and OI are aligned by strike. DEX is displayed as a red-white-blue background heatmap on the price chart."
 )
 
 for ticker in (tickers or DEFAULT_TICKERS):
