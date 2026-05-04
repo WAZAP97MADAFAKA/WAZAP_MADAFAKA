@@ -220,8 +220,29 @@ def get_gamma_levels(
     key_level = gamma_key_local if gamma_key_local is not None else gamma_key_global
     regime = infer_gamma_regime_from_net_gex(float(live_spot), gamma_flip, total_net_gex)
 
-    call_wall = _wall_from_df(local_calls)
-    put_wall = _wall_from_df(local_puts)
+    # Wall logic must match the OI chart:
+    # Call Wall = strike with the largest Call OI anywhere in the visible local strike range.
+    # Put Wall  = strike with the largest Put OI anywhere in the visible local strike range.
+    # Do NOT use filter_local_calls/filter_local_puts here because those only keep
+    # calls above spot and puts below spot. That can make the wall line disagree
+    # with the OI chart when the biggest call/put concentration is on the other side of spot.
+    def _wall_from_curve_column(curve_df: pd.DataFrame, oi_column: str):
+        if curve_df is None or curve_df.empty or oi_column not in curve_df.columns:
+            return None
+
+        clean = curve_df[["strike", oi_column]].copy()
+        clean["strike"] = pd.to_numeric(clean["strike"], errors="coerce")
+        clean[oi_column] = pd.to_numeric(clean[oi_column], errors="coerce").fillna(0.0)
+        clean = clean.dropna(subset=["strike"])
+        clean = clean[clean[oi_column] > 0]
+
+        if clean.empty:
+            return None
+
+        return float(clean.loc[clean[oi_column].idxmax(), "strike"])
+
+    call_wall = _wall_from_curve_column(local_curve, "call_weighted_oi")
+    put_wall = _wall_from_curve_column(local_curve, "put_weighted_oi")
 
     base_top_cols = [
         "strike",
