@@ -5,7 +5,6 @@ from options_common import (
     get_weighted_option_data_polygon,
     filter_local_calls,
     filter_local_puts,
-    choose_nearest_key_level,
     get_local_range,
 )
 
@@ -44,6 +43,114 @@ def infer_gamma_regime_from_net_gex(spot: float, gamma_flip, total_net_gex: floa
     return "NO_NEARBY_FLIP_DETECTED"
 
 
+def _empty_curve_df():
+    return pd.DataFrame(
+        columns=[
+            "strike",
+            "weighted_gex",
+            "total_gex",
+            "weighted_vex",
+            "total_vex",
+            "weighted_dex",
+            "total_dex",
+            "weighted_open_interest",
+            "total_open_interest",
+            "call_weighted_oi",
+            "put_weighted_oi",
+            "call_weighted_dex",
+            "put_weighted_dex",
+        ]
+    )
+
+
+def build_combined_curve(calls: pd.DataFrame, puts: pd.DataFrame) -> pd.DataFrame:
+    call_cols = [
+        "strike",
+        "weighted_gex",
+        "total_gex",
+        "weighted_vex",
+        "total_vex",
+        "weighted_dex",
+        "total_dex",
+        "weighted_open_interest",
+        "total_open_interest",
+    ]
+    put_cols = call_cols.copy()
+
+    call_df = calls[call_cols].copy() if calls is not None and not calls.empty else pd.DataFrame(columns=call_cols)
+    put_df = puts[put_cols].copy() if puts is not None and not puts.empty else pd.DataFrame(columns=put_cols)
+
+    for col in call_cols:
+        if col not in call_df.columns:
+            call_df[col] = 0.0
+        if col not in put_df.columns:
+            put_df[col] = 0.0
+
+    call_df = call_df.rename(
+        columns={
+            "weighted_gex": "call_weighted_gex",
+            "total_gex": "call_total_gex",
+            "weighted_vex": "call_weighted_vex",
+            "total_vex": "call_total_vex",
+            "weighted_dex": "call_weighted_dex",
+            "total_dex": "call_total_dex",
+            "weighted_open_interest": "call_weighted_oi",
+            "total_open_interest": "call_total_oi",
+        }
+    )
+    put_df = put_df.rename(
+        columns={
+            "weighted_gex": "put_weighted_gex",
+            "total_gex": "put_total_gex",
+            "weighted_vex": "put_weighted_vex",
+            "total_vex": "put_total_vex",
+            "weighted_dex": "put_weighted_dex",
+            "total_dex": "put_total_dex",
+            "weighted_open_interest": "put_weighted_oi",
+            "total_open_interest": "put_total_oi",
+        }
+    )
+
+    merged = pd.merge(call_df, put_df, on="strike", how="outer").fillna(0.0)
+    if merged.empty:
+        return _empty_curve_df()
+
+    merged["weighted_gex"] = merged["call_weighted_gex"] + merged["put_weighted_gex"]
+    merged["total_gex"] = merged["call_total_gex"] + merged["put_total_gex"]
+    merged["weighted_vex"] = merged["call_weighted_vex"] + merged["put_weighted_vex"]
+    merged["total_vex"] = merged["call_total_vex"] + merged["put_total_vex"]
+    merged["weighted_dex"] = merged["call_weighted_dex"] + merged["put_weighted_dex"]
+    merged["total_dex"] = merged["call_total_dex"] + merged["put_total_dex"]
+    merged["weighted_open_interest"] = merged["call_weighted_oi"] + merged["put_weighted_oi"]
+    merged["total_open_interest"] = merged["call_total_oi"] + merged["put_total_oi"]
+
+    out_cols = [
+        "strike",
+        "weighted_gex",
+        "total_gex",
+        "weighted_vex",
+        "total_vex",
+        "weighted_dex",
+        "total_dex",
+        "weighted_open_interest",
+        "total_open_interest",
+        "call_weighted_oi",
+        "put_weighted_oi",
+        "call_weighted_dex",
+        "put_weighted_dex",
+    ]
+    return merged[out_cols].sort_values("strike").reset_index(drop=True)
+
+
+def _wall_from_df(df: pd.DataFrame, oi_column: str = "weighted_open_interest"):
+    if df is None or df.empty or oi_column not in df.columns:
+        return None
+    clean = df.dropna(subset=["strike", oi_column]).copy()
+    if clean.empty:
+        return None
+    return float(clean.loc[clean[oi_column].idxmax(), "strike"])
+
+
 def get_gamma_levels(
     ticker_symbol: str = TICKER,
     weights=None,
@@ -54,9 +161,6 @@ def get_gamma_levels(
     if weights is None:
         weights = EXPIRATION_WEIGHTS
 
-    # -----------------------------
-    # Get LIVE current spot first
-    # -----------------------------
     live_spot, expirations_live, _, _, live_strike_step = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
@@ -64,16 +168,8 @@ def get_gamma_levels(
         max_distance=max_distance,
     )
 
-    # -----------------------------
-    # Use OI fixed spot as the anchor if provided
-    # Otherwise fall back to live spot
-    # -----------------------------
     anchor_spot = float(fixed_spot) if fixed_spot is not None else float(live_spot)
 
-    # -----------------------------
-    # Local window for visible trading levels
-    # anchored to OI fixed spot
-    # -----------------------------
     _, expirations, combined_calls, combined_puts, strike_step = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
@@ -84,34 +180,11 @@ def get_gamma_levels(
     local_calls = filter_local_calls(combined_calls, anchor_spot, max_distance, strike_step=strike_step)
     local_puts = filter_local_puts(combined_puts, anchor_spot, max_distance, strike_step=strike_step)
 
-    top_resistances = (
-        local_calls.sort_values("weighted_gex", ascending=False)
-        .head(num_levels)
-        .reset_index(drop=True)
-    )
+    top_resistances = local_calls.sort_values("weighted_gex", ascending=False).head(num_levels).reset_index(drop=True)
+    top_supports = local_puts.sort_values("weighted_gex", ascending=True).head(num_levels).reset_index(drop=True)
+    top_vex_resistances = local_calls.sort_values("weighted_vex", ascending=False).head(num_levels).reset_index(drop=True)
+    top_vex_supports = local_puts.sort_values("weighted_vex", ascending=True).head(num_levels).reset_index(drop=True)
 
-    top_supports = (
-        local_puts.sort_values("weighted_gex", ascending=True)
-        .head(num_levels)
-        .reset_index(drop=True)
-    )
-
-    top_vex_resistances = (
-        local_calls.sort_values("weighted_vex", ascending=False)
-        .head(num_levels)
-        .reset_index(drop=True)
-    )
-
-    top_vex_supports = (
-        local_puts.sort_values("weighted_vex", ascending=True)
-        .head(num_levels)
-        .reset_index(drop=True)
-    )
-
-    # -----------------------------
-    # Wider scan for flip detection + full GEX bar chart
-    # also anchored to OI fixed spot
-    # -----------------------------
     _, _, wide_calls, wide_puts, wide_strike_step = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
@@ -119,76 +192,63 @@ def get_gamma_levels(
         max_distance=max_distance * 4,
     )
 
-    combined_all = pd.concat(
-        [
-            wide_calls[["strike", "weighted_gex"]].copy(),
-            wide_puts[["strike", "weighted_gex"]].copy(),
-        ],
-        ignore_index=True,
-    )
+    combined_all = build_combined_curve(wide_calls, wide_puts)
+    gamma_flip = estimate_gamma_flip(combined_all[["strike", "weighted_gex"]].copy()) if not combined_all.empty else None
 
-    combined_all = (
-        combined_all.groupby("strike", as_index=False)
-        .agg(weighted_gex=("weighted_gex", "sum"))
-        .sort_values("strike")
-        .reset_index(drop=True)
-    )
-
-    gamma_flip = estimate_gamma_flip(combined_all)
     total_net_gex = float(combined_all["weighted_gex"].sum()) if not combined_all.empty else 0.0
+    total_net_vex = float(combined_all["weighted_vex"].sum()) if not combined_all.empty else 0.0
+    total_net_dex = float(combined_all["weighted_dex"].sum()) if not combined_all.empty else 0.0
 
     search_min, search_max = get_local_range(anchor_spot, max_distance, strike_step=strike_step)
 
-    # -----------------------------
-    # GLOBAL GAMMA KEY
-    # -----------------------------
     gamma_key_global = None
     if not combined_all.empty:
         combined_all["abs_weighted_gex"] = combined_all["weighted_gex"].abs()
         global_curve = combined_all.dropna(subset=["strike", "abs_weighted_gex"]).copy()
-
         if not global_curve.empty:
-            gamma_key_global = float(
-                global_curve.loc[global_curve["abs_weighted_gex"].idxmax(), "strike"]
-            )
+            gamma_key_global = float(global_curve.loc[global_curve["abs_weighted_gex"].idxmax(), "strike"])
 
-    # -----------------------------
-    # LOCAL GAMMA KEY
-    # -----------------------------
+    local_curve = combined_all[(combined_all["strike"] >= search_min) & (combined_all["strike"] <= search_max)].copy()
+
     gamma_key_local = None
-    local_curve_for_key = combined_all[
-        (combined_all["strike"] >= search_min) & (combined_all["strike"] <= search_max)
-    ].copy()
-
-    if not local_curve_for_key.empty:
-        if "abs_weighted_gex" not in local_curve_for_key.columns:
-            local_curve_for_key["abs_weighted_gex"] = local_curve_for_key["weighted_gex"].abs()
-
-        local_curve_for_key = local_curve_for_key.dropna(subset=["strike", "abs_weighted_gex"])
-
-        if not local_curve_for_key.empty:
-            gamma_key_local = float(
-                local_curve_for_key.loc[
-                    local_curve_for_key["abs_weighted_gex"].idxmax(), "strike"
-                ]
-            )
+    if not local_curve.empty:
+        local_curve["abs_weighted_gex"] = local_curve["weighted_gex"].abs()
+        local_key_df = local_curve.dropna(subset=["strike", "abs_weighted_gex"]).copy()
+        if not local_key_df.empty:
+            gamma_key_local = float(local_key_df.loc[local_key_df["abs_weighted_gex"].idxmax(), "strike"])
 
     key_level = gamma_key_local if gamma_key_local is not None else gamma_key_global
-
-    # Regime should still use LIVE current spot against the flip
     regime = infer_gamma_regime_from_net_gex(float(live_spot), gamma_flip, total_net_gex)
 
-    # local GEX curve for plotting / table
-    # anchored to OI fixed spot so it matches OI range
-    local_gex_curve = combined_all[
-        (combined_all["strike"] >= search_min) & (combined_all["strike"] <= search_max)
-    ].copy()
+    call_wall = _wall_from_df(local_calls)
+    put_wall = _wall_from_df(local_puts)
+
+    base_top_cols = [
+        "strike",
+        "weighted_gex",
+        "total_gex",
+        "weighted_vex",
+        "total_vex",
+        "weighted_dex",
+        "total_dex",
+        "total_open_interest",
+        "weighted_open_interest",
+        "weighted_volume",
+    ]
+
+    def safe_cols(df, cols):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=cols)
+        for c in cols:
+            if c not in df.columns:
+                df[c] = 0.0
+        return df[cols]
 
     return {
         "model": "GAMMA",
         "ticker": ticker_symbol,
-        "spot": round(float(live_spot), 2), # keep LIVE spot for the chart line
-        "anchor_spot": round(float(anchor_spot), 2), # OI-fixed anchor used for range selection
+        "spot": round(float(live_spot), 2),
+        "anchor_spot": round(float(anchor_spot), 2),
         "strike_step": float(strike_step),
         "expirations_used": expirations,
         "weights_used": weights,
@@ -197,21 +257,19 @@ def get_gamma_levels(
         "key_level": key_level,
         "gamma_key_global": gamma_key_global,
         "gamma_key_local": gamma_key_local,
+        "call_wall": call_wall,
+        "put_wall": put_wall,
         "regime": regime,
         "total_net_gex": total_net_gex,
+        "total_net_vex": total_net_vex,
+        "total_net_dex": total_net_dex,
         "flip_source": "wide_scan" if gamma_flip is not None else "net_gex_proxy",
-        "top_resistances": top_resistances[
-            ["strike", "weighted_gex", "total_gex", "weighted_vex", "total_vex", "total_open_interest", "weighted_volume"]
-        ],
-        "top_supports": top_supports[
-            ["strike", "weighted_gex", "total_gex", "weighted_vex", "total_vex", "total_open_interest", "weighted_volume"]
-        ],
-        "top_vex_resistances": top_vex_resistances[
-            ["strike", "weighted_vex", "total_vex", "weighted_gex", "total_gex"]
-        ],
-        "top_vex_supports": top_vex_supports[
-            ["strike", "weighted_vex", "total_vex", "weighted_gex", "total_gex"]
-        ],
-        "gex_curve": local_gex_curve.to_dict(orient="records"),
+        "top_resistances": safe_cols(top_resistances, base_top_cols),
+        "top_supports": safe_cols(top_supports, base_top_cols),
+        "top_vex_resistances": safe_cols(top_vex_resistances, base_top_cols),
+        "top_vex_supports": safe_cols(top_vex_supports, base_top_cols),
+        "gex_curve": local_curve.to_dict(orient="records"),
+        "dex_curve": local_curve[["strike", "weighted_dex", "total_dex"]].to_dict(orient="records") if not local_curve.empty else [],
+        "oi_curve": local_curve[["strike", "weighted_open_interest", "total_open_interest", "call_weighted_oi", "put_weighted_oi"]].to_dict(orient="records") if not local_curve.empty else [],
         "gex_curve_wide": combined_all.to_dict(orient="records"),
     }

@@ -69,8 +69,6 @@ def refresh_oi_data():
     saved_files = []
 
     for ticker in tickers:
-        # This already uses the latest available trading session.
-        # So on weekends it will use Friday's regular-session open.
         open_spot = get_latest_session_open_spot_price(ticker)
 
         result = get_oi_levels(
@@ -91,6 +89,8 @@ def refresh_oi_data():
             "weights_used": result["weights_used"],
             "search_range": result["search_range"],
             "key_level": result["key_level"],
+            "call_wall": result.get("call_wall"),
+            "put_wall": result.get("put_wall"),
             "top_resistances": dataframe_to_records(result["top_resistances"]),
             "top_supports": dataframe_to_records(result["top_supports"]),
             "refreshed_at_ny": now_ny.isoformat(),

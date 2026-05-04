@@ -6,3 +6,4 @@ plotly
 python-dateutil
 massive
 yfinance
+
