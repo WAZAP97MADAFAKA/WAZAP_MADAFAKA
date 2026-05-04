@@ -542,10 +542,10 @@ def build_hybrid_subplot_figure(
 
     # -----------------------------
     # Top-right: OI by strike
-    # Call OI = positive green
-    # Put OI = negative red
+    # Call OI = positive green bar
+    # Put OI = negative red bar
     # Net OI = Call OI + Put OI, where Put OI is negative
-    # Net OI is plotted as BLUE markers so it cannot visually stack on top of Call OI.
+    # Net OI is a THIN blue bar overlay so it stays visible without looking stacked.
     # -----------------------------
     for required_col in ["call_weighted_oi", "put_weighted_oi"]:
         if required_col not in curve.columns:
@@ -567,42 +567,21 @@ def build_hybrid_subplot_figure(
     curve["put_oi_negative"] = -curve["put_weighted_oi"].abs()
     curve["net_weighted_oi"] = curve["call_oi_positive"] + curve["put_oi_negative"]
 
-    # 1) Net OI FIRST as blue markers.
-    # This avoids the visual problem where Net OI looks stacked onto Call OI.
-    fig.add_trace(
-        go.Scatter(
-            x=curve["net_weighted_oi"],
-            y=curve["strike"],
-            mode="markers",
-            marker=dict(
-                color="#42A5F5",
-                size=8,
-                line=dict(color="#0D47A1", width=1),
-            ),
-            name="Net OI (Call + Put)",
-            hovertemplate=(
-                "Strike %{y}<br>"
-                "Net OI %{x:,.0f}<br>"
-                "Call OI %{customdata[0]:,.0f}<br>"
-                "Put OI %{customdata[1]:,.0f}<extra></extra>"
-            ),
-            customdata=curve[["call_oi_positive", "put_oi_negative"]].to_numpy(),
-            showlegend=True,
-        ),
-        row=1,
-        col=3,
-    )
+    # Bar thickness is tied to strike spacing so SPY/QQQ/SPX/NDX stay clean.
+    main_bar_width = max(float(strike_step) * 0.72, 0.18)
+    net_bar_width = max(float(strike_step) * 0.24, 0.08)
 
-    # 2) Call OI positive green bars from zero.
+    # 1) Call OI positive green bars from zero.
     fig.add_trace(
         go.Bar(
             x=curve["call_oi_positive"],
             y=curve["strike"],
             base=0,
+            width=main_bar_width,
             orientation="h",
             marker_color="#00C853",
             name="Call OI (+)",
-            opacity=0.78,
+            opacity=0.70,
             hovertemplate="Strike %{y}<br>Call OI +%{x:,.0f}<extra></extra>",
             showlegend=True,
         ),
@@ -610,17 +589,44 @@ def build_hybrid_subplot_figure(
         col=3,
     )
 
-    # 3) Put OI negative red bars from zero.
+    # 2) Put OI negative red bars from zero.
     fig.add_trace(
         go.Bar(
             x=curve["put_oi_negative"],
             y=curve["strike"],
             base=0,
+            width=main_bar_width,
             orientation="h",
             marker_color="#D50000",
             name="Put OI (-)",
-            opacity=0.78,
+            opacity=0.70,
             hovertemplate="Strike %{y}<br>Put OI %{x:,.0f}<extra></extra>",
+            showlegend=True,
+        ),
+        row=1,
+        col=3,
+    )
+
+    # 3) Net OI as a thin blue bar overlay.
+    #    Positive = call OI dominates. Negative = put OI dominates.
+    fig.add_trace(
+        go.Bar(
+            x=curve["net_weighted_oi"],
+            y=curve["strike"],
+            base=0,
+            width=net_bar_width,
+            orientation="h",
+            marker_color="#2196F3",
+            marker_line=dict(color="#BBDEFB", width=0.7),
+            name="Net OI",
+            opacity=1.0,
+            hovertemplate=(
+                "Strike %{y}<br>"
+                "Net OI %{x:,.0f}<br>"
+                "Call OI %{customdata[0]:,.0f}<br>"
+                "Put OI %{customdata[1]:,.0f}<extra></extra>"
+            ),
+            customdata=curve[["call_oi_positive", "put_oi_negative"]].to_numpy(),
             showlegend=True,
         ),
         row=1,
@@ -723,7 +729,7 @@ def build_hybrid_subplot_figure(
     fig.update_xaxes(title_text="Time", rangebreaks=[dict(bounds=["sat", "mon"])], rangeslider=dict(visible=False), row=1, col=1)
     fig.update_xaxes(title_text="Weighted GEX", row=1, col=2)
     fig.update_xaxes(
-        title_text="Weighted OI: Call + / Put - / Net Marker",
+        title_text="Weighted OI: Call + / Put - / Net",
         range=[-oi_axis_max * 1.15, oi_axis_max * 1.15],
         zeroline=True,
         zerolinecolor="rgba(255,255,255,0.45)",
