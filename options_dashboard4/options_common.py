@@ -317,7 +317,7 @@ def get_weighted_option_data_polygon(
     chain_df.loc[chain_df["contract_type"] == "put", "vex"] = -chain_df.loc[chain_df["contract_type"] == "put", "vex"]
     chain_df["weighted_vex"] = chain_df["vex"] * chain_df["weight"]
 
-    chain_df["dex"] = chain_df["delta"] * chain_df["open_interest"] * 100.0
+    chain_df["dex"] = chain_df["delta"] * chain_df["open_interest"] * 100.0 * float(spot)
     chain_df["weighted_dex"] = chain_df["dex"] * chain_df["weight"]
 
     calls = chain_df[chain_df["contract_type"] == "call"].copy()
