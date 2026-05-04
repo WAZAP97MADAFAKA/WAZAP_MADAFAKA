@@ -403,11 +403,28 @@ def build_hybrid_subplot_figure(
     if curve.empty:
         return fig, pd.DataFrame()
 
-    dex_abs_sum = float(curve["weighted_dex"].abs().sum())
-    if dex_abs_sum <= 0:
-        curve["dex_ratio"] = 0.0
+    # DEX heatmap color intensity is based on RAW weighted DEX values per strike,
+    # not DEX ratio / total absolute DEX.
+    #
+    # Visual scaling:
+    #   cap = 90th percentile of abs(weighted_dex) for the visible strikes
+    #   dex_visual_score = weighted_dex / cap, clipped from -1 to +1
+    #
+    # This keeps the heatmap readable while preventing one extreme outlier
+    # from making the entire chart look white.
+    dex_values = pd.to_numeric(curve["weighted_dex"], errors="coerce").fillna(0.0)
+    dex_abs_values = dex_values.abs()
+    nonzero_dex_abs_values = dex_abs_values[dex_abs_values > 0]
+
+    if nonzero_dex_abs_values.empty:
+        dex_color_cap = 1.0
     else:
-        curve["dex_ratio"] = (curve["weighted_dex"] / dex_abs_sum).clip(-1, 1)
+        dex_color_cap = float(nonzero_dex_abs_values.quantile(0.90))
+        if dex_color_cap <= 0 or pd.isna(dex_color_cap):
+            dex_color_cap = float(nonzero_dex_abs_values.max())
+
+    curve["dex_color_cap"] = dex_color_cap
+    curve["dex_visual_score"] = (dex_values / dex_color_cap).clip(-1.0, 1.0)
 
     # -----------------------------
     # Top-left: price + DEX heatmap background
@@ -424,22 +441,30 @@ def build_hybrid_subplot_figure(
     # Zero DEX = White
     # Negative DEX = Deep Red
     #
-    # DEX Ratio per strike = weighted_dex_at_strike / sum(abs(weighted_dex_at_strike))
-    # This keeps the color scale bounded from -1 to +1.
+    # Color intensity uses raw weighted DEX per strike scaled by the
+    # 90th percentile of absolute weighted DEX in the visible range.
     heat_curve = curve.copy().sort_values("strike").reset_index(drop=True)
-    heat_curve["dex_ratio"] = pd.to_numeric(
-        heat_curve.get("dex_ratio", 0.0), errors="coerce"
+    heat_curve["dex_visual_score"] = pd.to_numeric(
+        heat_curve.get("dex_visual_score", 0.0), errors="coerce"
     ).fillna(0.0).clip(-1.0, 1.0)
 
     heat_x = [x_min, x_max]
     heat_y = heat_curve["strike"].astype(float).tolist()
-    heat_z = [[float(r), float(r)] for r in heat_curve["dex_ratio"].tolist()]
+    heat_z = [[float(r), float(r)] for r in heat_curve["dex_visual_score"].tolist()]
+    heat_text = [
+        [
+            f"Weighted DEX {float(dex):,.0f}<br>90% Color Cap {float(cap):,.0f}",
+            f"Weighted DEX {float(dex):,.0f}<br>90% Color Cap {float(cap):,.0f}",
+        ]
+        for dex, cap in zip(heat_curve["weighted_dex"], heat_curve["dex_color_cap"])
+    ]
 
     fig.add_trace(
         go.Heatmap(
             x=heat_x,
             y=heat_y,
             z=heat_z,
+            text=heat_text,
             zmin=-1,
             zmax=1,
             colorscale=[
@@ -453,7 +478,8 @@ def build_hybrid_subplot_figure(
             showscale=False,
             hovertemplate=(
                 "Strike %{y}<br>"
-                "DEX Ratio %{z:.6f}<extra></extra>"
+                "%{text}<br>"
+                "Color Score %{z:.3f}<extra></extra>"
             ),
             name="DEX Background",
         ),
@@ -923,7 +949,7 @@ for ticker in (tickers or DEFAULT_TICKERS):
             display_cols = [
                 "strike",
                 "weighted_dex",
-                "dex_ratio",
+                "dex_visual_score",
                 "weighted_gex",
                 "weighted_vex",
                 "weighted_open_interest",
