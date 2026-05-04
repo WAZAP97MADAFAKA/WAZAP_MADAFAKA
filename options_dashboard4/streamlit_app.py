@@ -542,19 +542,78 @@ def build_hybrid_subplot_figure(
 
     # -----------------------------
     # Top-right: OI by strike
+    # Call OI = positive green
+    # Put OI = negative red
+    # Net OI = blue
     # -----------------------------
-    oi_colors = ["#42A5F5" if float(v) >= 0 else "#42A5F5" for v in curve["weighted_open_interest"]]
+    for required_col in ["call_weighted_oi", "put_weighted_oi"]:
+        if required_col not in curve.columns:
+            curve[required_col] = 0.0
+
+    curve["call_weighted_oi"] = pd.to_numeric(curve["call_weighted_oi"], errors="coerce").fillna(0.0)
+    curve["put_weighted_oi"] = pd.to_numeric(curve["put_weighted_oi"], errors="coerce").fillna(0.0)
+    curve["signed_put_weighted_oi"] = -curve["put_weighted_oi"].abs()
+    curve["net_weighted_oi"] = curve["call_weighted_oi"] + curve["signed_put_weighted_oi"]
+
     fig.add_trace(
         go.Bar(
-            x=curve["weighted_open_interest"],
+            x=curve["call_weighted_oi"],
             y=curve["strike"],
             orientation="h",
-            marker_color=oi_colors,
-            name="Weighted OI",
-            showlegend=False,
+            marker_color="#00C853",
+            name="Call OI",
+            opacity=0.85,
+            hovertemplate="Strike %{y}<br>Call OI %{x:,.0f}<extra></extra>",
+            showlegend=True,
         ),
         row=1,
         col=3,
+    )
+
+    fig.add_trace(
+        go.Bar(
+            x=curve["signed_put_weighted_oi"],
+            y=curve["strike"],
+            orientation="h",
+            marker_color="#D50000",
+            name="Put OI",
+            opacity=0.85,
+            hovertemplate="Strike %{y}<br>Put OI %{x:,.0f}<extra></extra>",
+            showlegend=True,
+        ),
+        row=1,
+        col=3,
+    )
+
+    fig.add_trace(
+        go.Bar(
+            x=curve["net_weighted_oi"],
+            y=curve["strike"],
+            orientation="h",
+            marker_color="#42A5F5",
+            name="Net OI",
+            opacity=0.55,
+            hovertemplate="Strike %{y}<br>Net OI %{x:,.0f}<extra></extra>",
+            showlegend=True,
+        ),
+        row=1,
+        col=3,
+    )
+
+    fig.add_vline(
+        x=0,
+        line_width=1,
+        line_dash="solid",
+        line_color="rgba(255,255,255,0.45)",
+        row=1,
+        col=3,
+    )
+
+    oi_axis_max = max(
+        float(curve["call_weighted_oi"].abs().max()) if not curve.empty else 0.0,
+        float(curve["signed_put_weighted_oi"].abs().max()) if not curve.empty else 0.0,
+        float(curve["net_weighted_oi"].abs().max()) if not curve.empty else 0.0,
+        1.0,
     )
 
     # Call Wall / Put Wall on all three top charts.
@@ -636,7 +695,14 @@ def build_hybrid_subplot_figure(
 
     fig.update_xaxes(title_text="Time", rangebreaks=[dict(bounds=["sat", "mon"])], rangeslider=dict(visible=False), row=1, col=1)
     fig.update_xaxes(title_text="Weighted GEX", row=1, col=2)
-    fig.update_xaxes(title_text="Weighted OI", row=1, col=3)
+    fig.update_xaxes(
+        title_text="Weighted OI (+Call / -Put / Net)",
+        range=[-oi_axis_max * 1.15, oi_axis_max * 1.15],
+        zeroline=True,
+        zerolinecolor="rgba(255,255,255,0.45)",
+        row=1,
+        col=3,
+    )
     fig.update_xaxes(title_text="Time", rangebreaks=[dict(bounds=["sat", "mon"])], rangeslider=dict(visible=False), row=2, col=1)
 
     fig.update_yaxes(title_text="Price / Strike", row=1, col=1)
