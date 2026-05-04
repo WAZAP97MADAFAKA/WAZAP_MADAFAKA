@@ -378,6 +378,7 @@ def build_hybrid_subplot_figure(
     ticker,
     hist_df,
     gamma,
+    oi_key_level=None,
     vex_history_df=None,
     forced_y_range=None,
 ):
@@ -523,18 +524,32 @@ def build_hybrid_subplot_figure(
         col=2,
     )
 
-    # Keep Gamma Key / Gamma Flip on GEX chart.
-    gamma_key_local = gamma.get("gamma_key_local", gamma.get("key_level"))
-    gamma_key_global = gamma.get("gamma_key_global")
+    # Keep only the Global Gamma Key on the GEX chart and label it as Gamma Key.
+    # Gamma Key Local is intentionally hidden.
+    gamma_key_global = gamma.get("gamma_key_global", gamma.get("key_level"))
     gamma_flip = gamma.get("gamma_flip")
 
-    if gamma_key_local is not None:
-        fig.add_hline(y=float(gamma_key_local), line_width=2, line_dash="dash", line_color="#BA68C8", row=1, col=2)
-        fig.add_annotation(xref="paper", yref="y2", x=0.78, y=float(gamma_key_local), text=f"Gamma Key Local {float(gamma_key_local):.2f}", showarrow=False, font=dict(color="#BA68C8", size=10), bgcolor="rgba(0,0,0,0.35)", xanchor="right", yanchor="bottom")
-
     if gamma_key_global is not None:
-        fig.add_hline(y=float(gamma_key_global), line_width=2, line_dash="dot", line_color="#CE93D8", row=1, col=2)
-        fig.add_annotation(xref="paper", yref="y2", x=0.78, y=float(gamma_key_global), text=f"Gamma Key Global {float(gamma_key_global):.2f}", showarrow=False, font=dict(color="#CE93D8", size=10), bgcolor="rgba(0,0,0,0.35)", xanchor="right", yanchor="top")
+        fig.add_hline(
+            y=float(gamma_key_global),
+            line_width=2,
+            line_dash="dot",
+            line_color="#CE93D8",
+            row=1,
+            col=2,
+        )
+        fig.add_annotation(
+            xref="paper",
+            yref="y2",
+            x=0.78,
+            y=float(gamma_key_global),
+            text=f"Gamma Key {float(gamma_key_global):.2f}",
+            showarrow=False,
+            font=dict(color="#CE93D8", size=10),
+            bgcolor="rgba(0,0,0,0.35)",
+            xanchor="right",
+            yanchor="top",
+        )
 
     if gamma_flip is not None:
         fig.add_hline(y=float(gamma_flip), line_width=2, line_dash="longdash", line_color="#FF9800", row=1, col=2)
@@ -649,7 +664,16 @@ def build_hybrid_subplot_figure(
         1.0,
     )
 
-    # Call Wall / Put Wall on all three top charts.
+    # Key/wall lines on all three top charts.
+    # OI levels remain removed from the price chart, but the OI Key is kept as a major reference level.
+    add_wall_lines(
+        fig,
+        oi_key_level,
+        "OI Key",
+        "#64B5F6",
+        rows_cols=[(1, 1, "y"), (1, 2, "y2"), (1, 3, "y3")],
+    )
+
     call_wall = gamma.get("call_wall")
     put_wall = gamma.get("put_wall")
     add_wall_lines(
@@ -896,6 +920,7 @@ for ticker in (tickers or DEFAULT_TICKERS):
             ticker=ticker,
             hist_df=hist_8h,
             gamma=gamma,
+            oi_key_level=oi_payload.get("key_level"),
             vex_history_df=vex_history_df,
             forced_y_range=aligned_y_range,
         )
