@@ -329,7 +329,7 @@ def render_metrics_panel(
 ):
     st.write("### GEX / DEX / VEX")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Net DEX", f"{net_dex:,.0f}")
+    c1.metric("Net DEX $", f"${net_dex:,.0f}")
     c2.metric("Net GEX", f"{net_gex:,.0f}")
     c3.metric("Net VEX", f"{net_vex:,.0f}")
 
@@ -403,12 +403,12 @@ def build_hybrid_subplot_figure(
     if curve.empty:
         return fig, pd.DataFrame()
 
-    # DEX heatmap color intensity is based on RAW weighted DEX values per strike,
+    # DEX heatmap color intensity is based on raw weighted NOTIONAL DEX dollars per strike,
     # not DEX ratio / total absolute DEX.
     #
     # Visual scaling:
     #   cap = 90th percentile of abs(weighted_dex) for the visible strikes
-    #   dex_visual_score = weighted_dex / cap, clipped from -1 to +1
+    #   dex_visual_score = weighted_notional_dex_dollars / cap, clipped from -1 to +1
     #
     # This keeps the heatmap readable while preventing one extreme outlier
     # from making the entire chart look white.
@@ -441,8 +441,8 @@ def build_hybrid_subplot_figure(
     # Zero DEX = White
     # Negative DEX = Deep Red
     #
-    # Color intensity uses raw weighted DEX per strike scaled by the
-    # 90th percentile of absolute weighted DEX in the visible range.
+    # Color intensity uses raw weighted NOTIONAL DEX dollars per strike scaled by the
+    # 90th percentile of absolute weighted Notional DEX dollars in the visible range.
     heat_curve = curve.copy().sort_values("strike").reset_index(drop=True)
     heat_curve["dex_visual_score"] = pd.to_numeric(
         heat_curve.get("dex_visual_score", 0.0), errors="coerce"
@@ -453,8 +453,8 @@ def build_hybrid_subplot_figure(
     heat_z = [[float(r), float(r)] for r in heat_curve["dex_visual_score"].tolist()]
     heat_text = [
         [
-            f"Weighted DEX {float(dex):,.0f}<br>90% Color Cap {float(cap):,.0f}",
-            f"Weighted DEX {float(dex):,.0f}<br>90% Color Cap {float(cap):,.0f}",
+            f"Weighted Notional DEX ${float(dex):,.0f}<br>90% Color Cap ${float(cap):,.0f}",
+            f"Weighted Notional DEX ${float(dex):,.0f}<br>90% Color Cap ${float(cap):,.0f}",
         ]
         for dex, cap in zip(heat_curve["weighted_dex"], heat_curve["dex_color_cap"])
     ]

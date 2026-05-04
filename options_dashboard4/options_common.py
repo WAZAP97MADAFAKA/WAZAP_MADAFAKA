@@ -278,8 +278,15 @@ def get_weighted_option_data_polygon(
     weights: list[float],
     fixed_spot: float | None = None,
     max_distance: float | None = None,
+    dex_spot: float | None = None,
 ):
+    # spot controls the option-chain search range and GEX anchor.
+    # dex_pricing_spot controls Notional DEX dollars.
+    #
+    # This lets the dashboard keep OI/GEX levels anchored to the fixed opening spot,
+    # while DEX dollars can update using the live/current spot.
     spot = float(fixed_spot) if fixed_spot is not None else get_current_spot_price(ticker_symbol)
+    dex_pricing_spot = float(dex_spot) if dex_spot is not None else float(spot)
     provisional_step = get_default_strike_step(ticker_symbol)
 
     strike_gte = None
@@ -317,8 +324,22 @@ def get_weighted_option_data_polygon(
     chain_df.loc[chain_df["contract_type"] == "put", "vex"] = -chain_df.loc[chain_df["contract_type"] == "put", "vex"]
     chain_df["weighted_vex"] = chain_df["vex"] * chain_df["weight"]
 
-    chain_df["dex"] = chain_df["delta"] * chain_df["open_interest"] * 100.0 * float(spot)
-    chain_df["weighted_dex"] = chain_df["dex"] * chain_df["weight"]
+    # Notional DEX ($)
+    # DEX dollars = delta * open_interest * contract_multiplier * live/current spot
+    # Weighted DEX dollars = DEX dollars * expiration_weight
+    chain_df["dex"] = (
+        chain_df["delta"]
+        * chain_df["open_interest"]
+        * 100.0
+        * dex_pricing_spot
+    )
+    chain_df["weighted_dex"] = (
+        chain_df["delta"]
+        * chain_df["open_interest"]
+        * 100.0
+        * dex_pricing_spot
+        * chain_df["weight"]
+    )
 
     calls = chain_df[chain_df["contract_type"] == "call"].copy()
     puts = chain_df[chain_df["contract_type"] == "put"].copy()

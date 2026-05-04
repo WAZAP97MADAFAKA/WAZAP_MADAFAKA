@@ -175,6 +175,7 @@ def get_gamma_levels(
         weights=weights,
         fixed_spot=anchor_spot,
         max_distance=max_distance,
+        dex_spot=float(live_spot),
     )
 
     local_calls = filter_local_calls(combined_calls, anchor_spot, max_distance, strike_step=strike_step)
@@ -190,6 +191,7 @@ def get_gamma_levels(
         weights=weights,
         fixed_spot=anchor_spot,
         max_distance=max_distance * 4,
+        dex_spot=float(live_spot),
     )
 
     combined_all = build_combined_curve(wide_calls, wide_puts)
@@ -270,6 +272,7 @@ def get_gamma_levels(
         "ticker": ticker_symbol,
         "spot": round(float(live_spot), 2),
         "anchor_spot": round(float(anchor_spot), 2),
+        "dex_pricing_spot": round(float(live_spot), 2),
         "strike_step": float(strike_step),
         "expirations_used": expirations,
         "weights_used": weights,
