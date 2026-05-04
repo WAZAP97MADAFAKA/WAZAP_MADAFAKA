@@ -892,3 +892,4 @@ for ticker in (tickers or DEFAULT_TICKERS):
     except Exception as e:
         st.error(f"{ticker} hybrid view error: {e}")
         st.divider()
+
