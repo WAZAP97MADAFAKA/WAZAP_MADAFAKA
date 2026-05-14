@@ -55,8 +55,14 @@ def _empty_curve_df():
             "total_dex",
             "weighted_open_interest",
             "total_open_interest",
+            "weighted_volume",
+            "total_volume",
             "call_weighted_oi",
             "put_weighted_oi",
+            "call_weighted_volume",
+            "put_weighted_volume",
+            "call_total_volume",
+            "put_total_volume",
             "call_weighted_dex",
             "put_weighted_dex",
         ]
@@ -74,6 +80,8 @@ def build_combined_curve(calls: pd.DataFrame, puts: pd.DataFrame) -> pd.DataFram
         "total_dex",
         "weighted_open_interest",
         "total_open_interest",
+        "weighted_volume",
+        "total_volume",
     ]
     put_cols = call_cols.copy()
 
@@ -96,6 +104,8 @@ def build_combined_curve(calls: pd.DataFrame, puts: pd.DataFrame) -> pd.DataFram
             "total_dex": "call_total_dex",
             "weighted_open_interest": "call_weighted_oi",
             "total_open_interest": "call_total_oi",
+            "weighted_volume": "call_weighted_volume",
+            "total_volume": "call_total_volume",
         }
     )
     put_df = put_df.rename(
@@ -108,6 +118,8 @@ def build_combined_curve(calls: pd.DataFrame, puts: pd.DataFrame) -> pd.DataFram
             "total_dex": "put_total_dex",
             "weighted_open_interest": "put_weighted_oi",
             "total_open_interest": "put_total_oi",
+            "weighted_volume": "put_weighted_volume",
+            "total_volume": "put_total_volume",
         }
     )
 
@@ -123,6 +135,8 @@ def build_combined_curve(calls: pd.DataFrame, puts: pd.DataFrame) -> pd.DataFram
     merged["total_dex"] = merged["call_total_dex"] + merged["put_total_dex"]
     merged["weighted_open_interest"] = merged["call_weighted_oi"] + merged["put_weighted_oi"]
     merged["total_open_interest"] = merged["call_total_oi"] + merged["put_total_oi"]
+    merged["weighted_volume"] = merged["call_weighted_volume"] + merged["put_weighted_volume"]
+    merged["total_volume"] = merged["call_total_volume"] + merged["put_total_volume"]
 
     out_cols = [
         "strike",
@@ -134,8 +148,14 @@ def build_combined_curve(calls: pd.DataFrame, puts: pd.DataFrame) -> pd.DataFram
         "total_dex",
         "weighted_open_interest",
         "total_open_interest",
+        "weighted_volume",
+        "total_volume",
         "call_weighted_oi",
         "put_weighted_oi",
+        "call_weighted_volume",
+        "put_weighted_volume",
+        "call_total_volume",
+        "put_total_volume",
         "call_weighted_dex",
         "put_weighted_dex",
     ]
@@ -340,6 +360,18 @@ def get_gamma_levels(
         "top_vex_supports": safe_cols(top_vex_supports, base_top_cols),
         "gex_curve": local_curve.to_dict(orient="records"),
         "dex_curve": local_curve[["strike", "weighted_dex", "total_dex"]].to_dict(orient="records") if not local_curve.empty else [],
-        "oi_curve": local_curve[["strike", "weighted_open_interest", "total_open_interest", "call_weighted_oi", "put_weighted_oi"]].to_dict(orient="records") if not local_curve.empty else [],
+        "oi_curve": local_curve[[
+            "strike",
+            "weighted_open_interest",
+            "total_open_interest",
+            "weighted_volume",
+            "total_volume",
+            "call_weighted_oi",
+            "put_weighted_oi",
+            "call_weighted_volume",
+            "put_weighted_volume",
+            "call_total_volume",
+            "put_total_volume",
+        ]].to_dict(orient="records") if not local_curve.empty else [],
         "gex_curve_wide": combined_all.to_dict(orient="records"),
     }

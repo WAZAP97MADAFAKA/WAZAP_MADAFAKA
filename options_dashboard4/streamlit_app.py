@@ -123,7 +123,16 @@ def get_curve_df(gamma: dict) -> pd.DataFrame:
     if curve.empty:
         curve = pd.DataFrame(gamma.get("gex_curve_wide", []))
 
-    needed = ["strike", "weighted_gex", "weighted_dex", "weighted_vex", "weighted_open_interest"]
+    needed = [
+        "strike",
+        "weighted_gex",
+        "weighted_dex",
+        "weighted_vex",
+        "weighted_open_interest",
+        "weighted_volume",
+        "call_weighted_volume",
+        "put_weighted_volume",
+    ]
     if curve.empty:
         return pd.DataFrame(columns=needed)
 
@@ -143,6 +152,17 @@ def get_curve_df(gamma: dict) -> pd.DataFrame:
 
     curve["call_weighted_oi"] = pd.to_numeric(curve["call_weighted_oi"], errors="coerce").fillna(0.0)
     curve["put_weighted_oi"] = pd.to_numeric(curve["put_weighted_oi"], errors="coerce").fillna(0.0)
+
+    if "weighted_volume" not in curve.columns:
+        curve["weighted_volume"] = 0.0
+    if "call_weighted_volume" not in curve.columns:
+        curve["call_weighted_volume"] = 0.0
+    if "put_weighted_volume" not in curve.columns:
+        curve["put_weighted_volume"] = 0.0
+
+    curve["weighted_volume"] = pd.to_numeric(curve["weighted_volume"], errors="coerce").fillna(0.0)
+    curve["call_weighted_volume"] = pd.to_numeric(curve["call_weighted_volume"], errors="coerce").fillna(0.0)
+    curve["put_weighted_volume"] = pd.to_numeric(curve["put_weighted_volume"], errors="coerce").fillna(0.0)
 
     return curve.dropna(subset=["strike"]).sort_values("strike").reset_index(drop=True)
 
@@ -242,6 +262,103 @@ def update_vex_history(ticker: str, timestamp, abs_vex: float, net_vex: float, m
             "net_vex_ratio": compute_net_vex_ratio(net_vex, abs_vex),
         }
     )
+
+    if len(history) > max_points:
+        history = history[-max_points:]
+
+    st.session_state[key] = history
+    return pd.DataFrame(history)
+
+
+def update_options_flow_history(
+    ticker: str,
+    timestamp,
+    curve_df: pd.DataFrame,
+    max_points: int = 480,
+):
+    """
+    Builds an intraday options-flow proxy from Massive snapshot cumulative day_volume.
+
+    Massive day_volume is cumulative for the session. On each dashboard refresh we
+    calculate the increase since the previous refresh:
+
+        Call Flow = new cumulative call weighted volume - previous cumulative call weighted volume
+        Put Flow  = new cumulative put weighted volume - previous cumulative put weighted volume
+        Net Flow  = Call Flow - Put Flow
+
+    This is a volume-flow proxy. It is not bid/ask aggressor-signed order flow.
+    """
+    key = f"options_flow_history_{ticker}"
+    state_key = f"options_flow_cumulative_{ticker}"
+
+    if key not in st.session_state:
+        st.session_state[key] = []
+    if state_key not in st.session_state:
+        st.session_state[state_key] = None
+
+    if curve_df is None or curve_df.empty:
+        return pd.DataFrame(st.session_state[key])
+
+    df = curve_df.copy()
+    for col in ["call_weighted_volume", "put_weighted_volume"]:
+        if col not in df.columns:
+            df[col] = 0.0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).clip(lower=0.0)
+
+    current_call_cum = float(df["call_weighted_volume"].sum())
+    current_put_cum = float(df["put_weighted_volume"].sum())
+
+    previous = st.session_state[state_key]
+    if previous is None:
+        # First point initializes the baseline. Do not show the entire day's
+        # cumulative volume as if it happened at this refresh.
+        call_flow = 0.0
+        put_flow = 0.0
+    else:
+        prev_call_cum = float(previous.get("call_cumulative", 0.0))
+        prev_put_cum = float(previous.get("put_cumulative", 0.0))
+
+        # If cumulative volume resets lower, treat it as a new session/baseline.
+        if current_call_cum < prev_call_cum or current_put_cum < prev_put_cum:
+            call_flow = 0.0
+            put_flow = 0.0
+        else:
+            call_flow = max(current_call_cum - prev_call_cum, 0.0)
+            put_flow = max(current_put_cum - prev_put_cum, 0.0)
+
+    net_flow = call_flow - put_flow
+
+    st.session_state[state_key] = {
+        "call_cumulative": current_call_cum,
+        "put_cumulative": current_put_cum,
+    }
+
+    history = st.session_state[key]
+    ts = pd.to_datetime(timestamp)
+
+    # Avoid duplicate x values if the latest price bar timestamp has not changed.
+    if history and pd.to_datetime(history[-1]["datetime"]) == ts:
+        history[-1] = {
+            "datetime": ts,
+            "call_flow": float(call_flow),
+            "put_flow": float(put_flow),
+            "put_flow_negative": -float(put_flow),
+            "net_flow": float(net_flow),
+            "call_cumulative": float(current_call_cum),
+            "put_cumulative": float(current_put_cum),
+        }
+    else:
+        history.append(
+            {
+                "datetime": ts,
+                "call_flow": float(call_flow),
+                "put_flow": float(put_flow),
+                "put_flow_negative": -float(put_flow),
+                "net_flow": float(net_flow),
+                "call_cumulative": float(current_call_cum),
+                "put_cumulative": float(current_put_cum),
+            }
+        )
 
     if len(history) > max_points:
         history = history[-max_points:]
@@ -433,6 +550,7 @@ def build_hybrid_subplot_figure(
     gamma,
     oi_key_level=None,
     vex_history_df=None,
+    flow_history_df=None,
     forced_y_range=None,
 ):
     fig = make_subplots(
@@ -764,18 +882,40 @@ def build_hybrid_subplot_figure(
     )
 
     # -----------------------------
-    # Bottom: Abs VEX + Net VEX Ratio
+    # Bottom: Net Flow Chart
     # -----------------------------
-    if vex_history_df is not None and not vex_history_df.empty:
-        vex_history_df = vex_history_df.sort_values("datetime").reset_index(drop=True)
+    if flow_history_df is not None and not flow_history_df.empty:
+        flow_history_df = flow_history_df.copy()
+        flow_history_df["datetime"] = pd.to_datetime(flow_history_df["datetime"])
+        flow_history_df = flow_history_df.sort_values("datetime").reset_index(drop=True)
+
+        for col in ["call_flow", "put_flow", "put_flow_negative", "net_flow"]:
+            if col not in flow_history_df.columns:
+                flow_history_df[col] = 0.0
+            flow_history_df[col] = pd.to_numeric(flow_history_df[col], errors="coerce").fillna(0.0)
 
         fig.add_trace(
-            go.Scatter(
-                x=vex_history_df["datetime"],
-                y=vex_history_df["abs_vex"],
-                mode="lines",
-                name="Abs VEX",
-                line=dict(width=2, color="#80CBC4"),
+            go.Bar(
+                x=flow_history_df["datetime"],
+                y=flow_history_df["call_flow"],
+                name="Call Flow",
+                marker_color="#00C853",
+                opacity=0.85,
+                hovertemplate="Time %{x}<br>Call Flow +%{y:,.0f}<extra></extra>",
+            ),
+            row=2,
+            col=1,
+            secondary_y=False,
+        )
+
+        fig.add_trace(
+            go.Bar(
+                x=flow_history_df["datetime"],
+                y=flow_history_df["put_flow_negative"],
+                name="Put Flow",
+                marker_color="#D50000",
+                opacity=0.85,
+                hovertemplate="Time %{x}<br>Put Flow %{y:,.0f}<extra></extra>",
             ),
             row=2,
             col=1,
@@ -784,34 +924,24 @@ def build_hybrid_subplot_figure(
 
         fig.add_trace(
             go.Scatter(
-                x=vex_history_df["datetime"],
-                y=vex_history_df["net_vex_ratio"],
-                mode="lines",
-                name="Net VEX Ratio",
-                line=dict(width=2, dash="dot", color="#CE93D8"),
+                x=flow_history_df["datetime"],
+                y=flow_history_df["net_flow"],
+                mode="lines+markers",
+                name="Net Flow",
+                line=dict(width=2, color="#64B5F6"),
+                marker=dict(size=5, color="#64B5F6"),
+                hovertemplate="Time %{x}<br>Net Flow %{y:,.0f}<extra></extra>",
             ),
             row=2,
             col=1,
-            secondary_y=True,
+            secondary_y=False,
         )
 
-        if ticker == "SPY":
-            low_band = 8000
-            med_band = 25000
-        elif ticker == "QQQ":
-            low_band = 10000
-            med_band = 30000
-        else:
-            low_band = 8000
-            med_band = 25000
-
-        fig.add_hrect(y0=0, y1=low_band, fillcolor="rgba(0, 200, 83, 0.08)", line_width=0, row=2, col=1)
-        fig.add_hrect(y0=low_band, y1=med_band, fillcolor="rgba(255, 193, 7, 0.08)", line_width=0, row=2, col=1)
-        fig.add_hrect(
-            y0=med_band,
-            y1=max(float(vex_history_df["abs_vex"].max()) * 1.15, med_band + 1),
-            fillcolor="rgba(244, 67, 54, 0.08)",
-            line_width=0,
+        fig.add_hline(
+            y=0,
+            line_width=1,
+            line_dash="solid",
+            line_color="rgba(255,255,255,0.45)",
             row=2,
             col=1,
         )
@@ -822,7 +952,14 @@ def build_hybrid_subplot_figure(
     fig.update_yaxes(**shared_yaxis, showticklabels=True, matches="y", row=1, col=2)
     fig.update_yaxes(**shared_yaxis, showticklabels=True, matches="y", row=1, col=3)
 
-    fig.update_xaxes(title_text="Time", rangebreaks=[dict(bounds=["sat", "mon"])], rangeslider=dict(visible=False), row=1, col=1)
+    fig.update_xaxes(
+        title_text="Time",
+        range=[x_min, x_max],
+        rangebreaks=[dict(bounds=["sat", "mon"])],
+        rangeslider=dict(visible=False),
+        row=1,
+        col=1,
+    )
     fig.update_xaxes(title_text="Weighted GEX", row=1, col=2)
     fig.update_xaxes(
         title_text="Weighted OI: Call + / Put - / Net",
@@ -832,16 +969,23 @@ def build_hybrid_subplot_figure(
         row=1,
         col=3,
     )
-    fig.update_xaxes(title_text="Time", rangebreaks=[dict(bounds=["sat", "mon"])], rangeslider=dict(visible=False), row=2, col=1)
+    fig.update_xaxes(
+        title_text="Time",
+        range=[x_min, x_max],
+        rangebreaks=[dict(bounds=["sat", "mon"])],
+        rangeslider=dict(visible=False),
+        row=2,
+        col=1,
+    )
 
     fig.update_yaxes(title_text="Price / Strike", row=1, col=1)
     fig.update_yaxes(title_text="Strike", row=1, col=2)
     fig.update_yaxes(title_text="Strike", row=1, col=3)
-    fig.update_yaxes(title_text="Abs VEX", row=2, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="Net VEX Ratio", row=2, col=1, secondary_y=True, range=[-1, 1], showgrid=False)
+    fig.update_yaxes(title_text="Options Flow", row=2, col=1, secondary_y=False)
+    fig.update_yaxes(showticklabels=False, showgrid=False, row=2, col=1, secondary_y=True)
 
     fig.update_layout(
-        title=f"{ticker} - Price / GEX / OI View",
+        title=f"{ticker} - Price / GEX / OI / Flow View",
         template="plotly_dark",
         height=950,
         margin=dict(l=60, r=110, t=70, b=50),
@@ -917,7 +1061,7 @@ st.sidebar.write(status.get("last_refresh_ny", "No refresh yet"))
 
 st.header("Hybrid View")
 st.write(
-    "Price, GEX, and OI are aligned by strike. DEX is displayed as a red-white-blue background heatmap on the price chart."
+    "Price, GEX, and OI are aligned by strike. DEX is displayed as a red-white-blue background heatmap. The bottom chart shows incremental options-flow volume from Massive snapshot volume changes."
 )
 
 for ticker in (tickers or DEFAULT_TICKERS):
@@ -981,6 +1125,17 @@ for ticker in (tickers or DEFAULT_TICKERS):
         hist_8h = slice_history_last_hours(hist_full, 8)
         strike_step = get_visual_strike_step(ticker, gamma)
 
+        if hist_8h is not None and not hist_8h.empty and "datetime" in hist_8h.columns:
+            flow_timestamp = hist_8h["datetime"].max()
+        else:
+            flow_timestamp = pd.Timestamp.now()
+
+        flow_history_df = update_options_flow_history(
+            ticker=ticker,
+            timestamp=flow_timestamp,
+            curve_df=curve_df,
+        )
+
         aligned_y_range = get_aligned_y_range(
             hist_df=hist_8h,
             curve_df=curve_df,
@@ -1003,6 +1158,7 @@ for ticker in (tickers or DEFAULT_TICKERS):
             gamma=gamma,
             oi_key_level=live_oi_key_level,
             vex_history_df=vex_history_df,
+            flow_history_df=flow_history_df,
             forced_y_range=aligned_y_range,
         )
 
@@ -1022,6 +1178,9 @@ for ticker in (tickers or DEFAULT_TICKERS):
                 "weighted_open_interest",
                 "call_weighted_oi",
                 "put_weighted_oi",
+                "call_weighted_volume",
+                "put_weighted_volume",
+                "weighted_volume",
             ]
             display_cols = [c for c in display_cols if c in curve_df.columns]
             st.dataframe(curve_df[display_cols].sort_values("strike", ascending=False), use_container_width=True)
