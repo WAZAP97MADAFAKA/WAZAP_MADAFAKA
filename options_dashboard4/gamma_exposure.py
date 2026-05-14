@@ -142,6 +142,52 @@ def build_combined_curve(calls: pd.DataFrame, puts: pd.DataFrame) -> pd.DataFram
     return merged[out_cols].sort_values("strike").reset_index(drop=True)
 
 
+
+def _oi_key_from_curve(curve_df: pd.DataFrame, current_spot: float | None = None):
+    """
+    OI Key = strike with the strongest single-side weighted OI concentration.
+
+    This matches the OI chart logic:
+        dominant_weighted_oi = max(call_weighted_oi, put_weighted_oi)
+
+    It does not use Net OI and does not restrict calls to above spot or puts to below spot.
+    """
+    if curve_df is None or curve_df.empty:
+        return None
+
+    required_cols = ["strike", "call_weighted_oi", "put_weighted_oi"]
+    for col in required_cols:
+        if col not in curve_df.columns:
+            return None
+
+    clean = curve_df[required_cols].copy()
+    clean["strike"] = pd.to_numeric(clean["strike"], errors="coerce")
+    clean["call_weighted_oi"] = pd.to_numeric(clean["call_weighted_oi"], errors="coerce").fillna(0.0).abs()
+    clean["put_weighted_oi"] = pd.to_numeric(clean["put_weighted_oi"], errors="coerce").fillna(0.0).abs()
+    clean = clean.dropna(subset=["strike"])
+
+    if clean.empty:
+        return None
+
+    clean["dominant_weighted_oi"] = clean[["call_weighted_oi", "put_weighted_oi"]].max(axis=1)
+    clean["total_weighted_oi"] = clean["call_weighted_oi"] + clean["put_weighted_oi"]
+    clean = clean[clean["dominant_weighted_oi"] > 0].copy()
+
+    if clean.empty:
+        return None
+
+    if current_spot is not None:
+        clean["distance_to_spot"] = (clean["strike"] - float(current_spot)).abs()
+    else:
+        clean["distance_to_spot"] = 0.0
+
+    clean = clean.sort_values(
+        by=["dominant_weighted_oi", "total_weighted_oi", "distance_to_spot", "strike"],
+        ascending=[False, False, True, True],
+    ).reset_index(drop=True)
+
+    return float(clean.iloc[0]["strike"])
+
 def _wall_from_df(df: pd.DataFrame, oi_column: str = "weighted_open_interest"):
     if df is None or df.empty or oi_column not in df.columns:
         return None
@@ -175,7 +221,6 @@ def get_gamma_levels(
         weights=weights,
         fixed_spot=anchor_spot,
         max_distance=max_distance,
-        dex_spot=float(live_spot),
     )
 
     local_calls = filter_local_calls(combined_calls, anchor_spot, max_distance, strike_step=strike_step)
@@ -191,7 +236,6 @@ def get_gamma_levels(
         weights=weights,
         fixed_spot=anchor_spot,
         max_distance=max_distance * 4,
-        dex_spot=float(live_spot),
     )
 
     combined_all = build_combined_curve(wide_calls, wide_puts)
@@ -245,6 +289,7 @@ def get_gamma_levels(
 
     call_wall = _wall_from_curve_column(local_curve, "call_weighted_oi")
     put_wall = _wall_from_curve_column(local_curve, "put_weighted_oi")
+    oi_key = _oi_key_from_curve(local_curve, current_spot=float(live_spot))
 
     base_top_cols = [
         "strike",
@@ -272,7 +317,7 @@ def get_gamma_levels(
         "ticker": ticker_symbol,
         "spot": round(float(live_spot), 2),
         "anchor_spot": round(float(anchor_spot), 2),
-        "dex_pricing_spot": round(float(live_spot), 2),
+        "exposure_spot": round(float(live_spot), 2),
         "strike_step": float(strike_step),
         "expirations_used": expirations,
         "weights_used": weights,
@@ -281,6 +326,7 @@ def get_gamma_levels(
         "key_level": key_level,
         "gamma_key_global": gamma_key_global,
         "gamma_key_local": gamma_key_local,
+        "oi_key": oi_key,
         "call_wall": call_wall,
         "put_wall": put_wall,
         "regime": regime,

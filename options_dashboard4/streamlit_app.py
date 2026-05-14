@@ -346,6 +346,59 @@ def render_metrics_panel(
         st.info(f"VES OFF — {ves_signal.get('reason', '')}")
 
 
+
+def compute_oi_key_from_curve(curve_df: pd.DataFrame, current_spot: float | None = None) -> float | None:
+    """
+    OI Key = the strike with the strongest single-side weighted OI concentration
+    in the same curve used by the OI chart.
+
+    This intentionally does NOT use Net OI.
+
+    For each strike:
+        dominant_weighted_oi = max(call_weighted_oi, put_weighted_oi)
+
+    The key is the strike with the largest dominant_weighted_oi.
+    Ties are broken by:
+        1) larger total call+put weighted OI
+        2) closer to current spot, when spot is available
+        3) lower strike, for deterministic output
+    """
+    if curve_df is None or curve_df.empty:
+        return None
+
+    required_cols = ["strike", "call_weighted_oi", "put_weighted_oi"]
+    for col in required_cols:
+        if col not in curve_df.columns:
+            return None
+
+    clean = curve_df[required_cols].copy()
+    clean["strike"] = pd.to_numeric(clean["strike"], errors="coerce")
+    clean["call_weighted_oi"] = pd.to_numeric(clean["call_weighted_oi"], errors="coerce").fillna(0.0).abs()
+    clean["put_weighted_oi"] = pd.to_numeric(clean["put_weighted_oi"], errors="coerce").fillna(0.0).abs()
+    clean = clean.dropna(subset=["strike"])
+
+    if clean.empty:
+        return None
+
+    clean["dominant_weighted_oi"] = clean[["call_weighted_oi", "put_weighted_oi"]].max(axis=1)
+    clean["total_weighted_oi"] = clean["call_weighted_oi"] + clean["put_weighted_oi"]
+
+    clean = clean[clean["dominant_weighted_oi"] > 0].copy()
+    if clean.empty:
+        return None
+
+    if current_spot is not None:
+        clean["distance_to_spot"] = (clean["strike"] - float(current_spot)).abs()
+    else:
+        clean["distance_to_spot"] = 0.0
+
+    clean = clean.sort_values(
+        by=["dominant_weighted_oi", "total_weighted_oi", "distance_to_spot", "strike"],
+        ascending=[False, False, True, True],
+    ).reset_index(drop=True)
+
+    return float(clean.iloc[0]["strike"])
+
 def add_wall_lines(fig, y_value, label, color, rows_cols):
     if y_value is None or pd.isna(y_value):
         return
@@ -678,11 +731,16 @@ def build_hybrid_subplot_figure(
         1.0,
     )
 
+    # OI Key must come from the same OI curve used by this chart.
+    # Fallback to the cached value only if the chart curve cannot produce a key.
+    computed_oi_key_level = compute_oi_key_from_curve(curve, current_spot=current_spot)
+    effective_oi_key_level = computed_oi_key_level if computed_oi_key_level is not None else oi_key_level
+
     # Key/wall lines on all three top charts.
     # OI levels remain removed from the price chart, but the OI Key is kept as a major reference level.
     add_wall_lines(
         fig,
-        oi_key_level,
+        effective_oi_key_level,
         "OI Key",
         "#64B5F6",
         rows_cols=[(1, 1, "y"), (1, 2, "y2"), (1, 3, "y3")],
@@ -930,11 +988,20 @@ for ticker in (tickers or DEFAULT_TICKERS):
             strike_step=strike_step,
         )
 
+        # Use the live/calculated OI Key from the same curve used by the OI chart.
+        # This prevents the displayed OI Key from disagreeing with the OI bars.
+        live_oi_key_level = compute_oi_key_from_curve(
+            curve_df,
+            current_spot=float(gamma["spot"]),
+        )
+        if live_oi_key_level is None:
+            live_oi_key_level = oi_payload.get("key_level")
+
         hybrid_fig, _ = build_hybrid_subplot_figure(
             ticker=ticker,
             hist_df=hist_8h,
             gamma=gamma,
-            oi_key_level=oi_payload.get("key_level"),
+            oi_key_level=live_oi_key_level,
             vex_history_df=vex_history_df,
             forced_y_range=aligned_y_range,
         )

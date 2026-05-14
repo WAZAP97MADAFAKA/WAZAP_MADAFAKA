@@ -9,12 +9,89 @@ from options_common import (
 )
 
 
+def _empty_oi_df(columns: list[str]) -> pd.DataFrame:
+    return pd.DataFrame(columns=columns)
+
+
+def _oi_key_from_calls_puts(
+    local_calls: pd.DataFrame,
+    local_puts: pd.DataFrame,
+    current_spot: float | None = None,
+):
+    """
+    OI Key = strike with the strongest single-side weighted OI concentration.
+
+    This intentionally does NOT use Net OI.
+
+    At every visible local strike:
+        dominant_weighted_oi = max(call_weighted_oi, put_weighted_oi)
+
+    The key is the strike with the highest dominant_weighted_oi.
+    """
+    call_df = pd.DataFrame()
+    put_df = pd.DataFrame()
+
+    if local_calls is not None and not local_calls.empty:
+        call_df = local_calls[["strike", "weighted_open_interest"]].copy()
+        call_df = call_df.rename(columns={"weighted_open_interest": "call_weighted_oi"})
+
+    if local_puts is not None and not local_puts.empty:
+        put_df = local_puts[["strike", "weighted_open_interest"]].copy()
+        put_df = put_df.rename(columns={"weighted_open_interest": "put_weighted_oi"})
+
+    if call_df.empty and put_df.empty:
+        return None
+
+    if call_df.empty:
+        call_df = pd.DataFrame(columns=["strike", "call_weighted_oi"])
+    if put_df.empty:
+        put_df = pd.DataFrame(columns=["strike", "put_weighted_oi"])
+
+    merged = pd.merge(call_df, put_df, on="strike", how="outer").fillna(0.0)
+    if merged.empty:
+        return None
+
+    merged["strike"] = pd.to_numeric(merged["strike"], errors="coerce")
+    merged["call_weighted_oi"] = pd.to_numeric(merged["call_weighted_oi"], errors="coerce").fillna(0.0).abs()
+    merged["put_weighted_oi"] = pd.to_numeric(merged["put_weighted_oi"], errors="coerce").fillna(0.0).abs()
+    merged = merged.dropna(subset=["strike"])
+
+    if merged.empty:
+        return None
+
+    merged["dominant_weighted_oi"] = merged[["call_weighted_oi", "put_weighted_oi"]].max(axis=1)
+    merged["total_weighted_oi"] = merged["call_weighted_oi"] + merged["put_weighted_oi"]
+    merged = merged[merged["dominant_weighted_oi"] > 0].copy()
+
+    if merged.empty:
+        return None
+
+    if current_spot is not None:
+        merged["distance_to_spot"] = (merged["strike"] - float(current_spot)).abs()
+    else:
+        merged["distance_to_spot"] = 0.0
+
+    merged = merged.sort_values(
+        by=["dominant_weighted_oi", "total_weighted_oi", "distance_to_spot", "strike"],
+        ascending=[False, False, True, True],
+    ).reset_index(drop=True)
+
+    return float(merged.iloc[0]["strike"])
+
+
 def _wall_from_df(df: pd.DataFrame, oi_column: str = "weighted_open_interest"):
     if df is None or df.empty or oi_column not in df.columns:
         return None
-    clean = df.dropna(subset=["strike", oi_column]).copy()
+
+    clean = df[["strike", oi_column]].copy()
+    clean["strike"] = pd.to_numeric(clean["strike"], errors="coerce")
+    clean[oi_column] = pd.to_numeric(clean[oi_column], errors="coerce").fillna(0.0)
+    clean = clean.dropna(subset=["strike"])
+    clean = clean[clean[oi_column] > 0]
+
     if clean.empty:
         return None
+
     return float(clean.loc[clean[oi_column].idxmax(), "strike"])
 
 
@@ -35,25 +112,38 @@ def get_oi_levels(
         max_distance=max_distance,
     )
 
-    local_calls = filter_local_calls(combined_calls, spot, max_distance, strike_step=strike_step)
-    local_puts = filter_local_puts(combined_puts, spot, max_distance, strike_step=strike_step)
+    local_calls = filter_local_calls(
+        combined_calls,
+        spot,
+        max_distance,
+        strike_step=strike_step,
+    )
+    local_puts = filter_local_puts(
+        combined_puts,
+        spot,
+        max_distance,
+        strike_step=strike_step,
+    )
 
-    top_resistances = local_calls.sort_values("weighted_open_interest", ascending=False).head(num_levels).reset_index(drop=True)
-    top_supports = local_puts.sort_values("weighted_open_interest", ascending=False).head(num_levels).reset_index(drop=True)
+    top_resistances = (
+        local_calls.sort_values("weighted_open_interest", ascending=False)
+        .head(num_levels)
+        .reset_index(drop=True)
+    )
+    top_supports = (
+        local_puts.sort_values("weighted_open_interest", ascending=False)
+        .head(num_levels)
+        .reset_index(drop=True)
+    )
 
-    combined_levels = pd.concat(
-        [
-            local_calls[["strike", "weighted_open_interest"]].copy(),
-            local_puts[["strike", "weighted_open_interest"]].copy(),
-        ],
-        ignore_index=True,
-    ).dropna(subset=["strike", "weighted_open_interest"])
-
-    if not combined_levels.empty:
-        combined_levels = combined_levels.sort_values("weighted_open_interest", ascending=False).reset_index(drop=True)
-        key_level = float(combined_levels.iloc[0]["strike"])
-    else:
-        key_level = None
+    # Correct OI Key:
+    # Use the strongest single-side weighted OI concentration from the visible local range.
+    # This matches the OI chart logic and does not use Net OI.
+    key_level = _oi_key_from_calls_puts(
+        local_calls=local_calls,
+        local_puts=local_puts,
+        current_spot=float(spot),
+    )
 
     search_min, search_max = get_local_range(spot, max_distance, strike_step=strike_step)
 
@@ -70,13 +160,14 @@ def get_oi_levels(
         "total_dex",
     ]
 
-    def safe_cols(df):
+    def safe_cols(df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:
-            return pd.DataFrame(columns=output_cols)
-        for c in output_cols:
-            if c not in df.columns:
-                df[c] = 0.0
-        return df[output_cols]
+            return _empty_oi_df(output_cols)
+        out = df.copy()
+        for col in output_cols:
+            if col not in out.columns:
+                out[col] = 0.0
+        return out[output_cols]
 
     return {
         "model": "OI",
