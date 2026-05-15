@@ -563,7 +563,7 @@ def build_hybrid_subplot_figure(
         column_widths=[0.54, 0.25, 0.21],
         specs=[
             [{"type": "xy"}, {"type": "xy"}, {"type": "xy"}],
-            [{"type": "xy", "colspan": 3, "secondary_y": True}, None, None],
+            [{"type": "xy", "secondary_y": True}, None, None],
         ],
     )
 
@@ -1061,7 +1061,9 @@ st.sidebar.write(status.get("last_refresh_ny", "No refresh yet"))
 
 st.header("Hybrid View")
 st.write(
-    "Price, GEX, and OI are aligned by strike. DEX is displayed as a red-white-blue background heatmap. The bottom chart shows incremental options-flow volume from Massive snapshot volume changes."
+    "Price, GEX, and OI are aligned by strike. DEX is displayed as a red-white-blue background heatmap. "
+    "The bottom Options Flow chart is locked to the same width and time range as the price/strike chart. "
+    "It shows incremental call/put volume from Massive snapshot volume changes."
 )
 
 for ticker in (tickers or DEFAULT_TICKERS):
