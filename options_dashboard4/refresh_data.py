@@ -14,7 +14,7 @@ from options_config import (
     NY_TIMEZONE,
 )
 from oi_levels import get_oi_levels
-from options_common import get_latest_session_open_spot_price
+from options_common import get_current_spot_price
 
 
 def ensure_dirs():
@@ -69,32 +69,36 @@ def refresh_oi_data():
     saved_files = []
 
     for ticker in tickers:
-        open_spot = get_latest_session_open_spot_price(ticker)
+        # The selected OI/GEX strike range should be anchored to the spot
+        # at the time this refresh runs, not to the 9:30 AM session open.
+        #
+        # Keep the field name `oi_fixed_spot` for compatibility with the dashboard.
+        # It now means "last refresh anchor spot".
+        refresh_spot = get_current_spot_price(ticker)
 
         result = get_oi_levels(
             ticker_symbol=ticker,
             weights=weights,
             max_distance=max_distance,
             num_levels=num_levels,
-            fixed_spot=open_spot,
+            fixed_spot=refresh_spot,
         )
 
         payload = {
             "model": result["model"],
             "ticker": result["ticker"],
             "spot": result["spot"],
-            "oi_fixed_spot": open_spot,
+            "oi_fixed_spot": refresh_spot,
+            "oi_anchor_spot": refresh_spot,
             "strike_step": result.get("strike_step"),
             "expirations_used": result["expirations_used"],
             "weights_used": result["weights_used"],
             "search_range": result["search_range"],
             "key_level": result["key_level"],
-            "call_wall": result.get("call_wall"),
-            "put_wall": result.get("put_wall"),
             "top_resistances": dataframe_to_records(result["top_resistances"]),
             "top_supports": dataframe_to_records(result["top_supports"]),
             "refreshed_at_ny": now_ny.isoformat(),
-            "refresh_mode": "latest_available_session_open",
+            "refresh_mode": "latest_refresh_spot",
         }
 
         output_file = os.path.join(DATA_CACHE_DIR, f"oi_{ticker}.json")
@@ -108,7 +112,7 @@ def refresh_oi_data():
         "max_distance": max_distance,
         "num_levels": num_levels,
         "files_written": saved_files,
-        "refresh_mode": "latest_available_session_open",
+        "refresh_mode": "latest_refresh_spot",
     }
 
     save_json(REFRESH_STATUS_FILE, refresh_status)
