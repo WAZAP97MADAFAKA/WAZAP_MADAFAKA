@@ -224,39 +224,58 @@ def get_gamma_levels(
     num_levels: int = NUM_LEVELS,
     fixed_spot: float | None = None,
 ):
+    """
+    Builds the full dashboard payload from ONE Massive option-chain snapshot
+    per ticker/cache refresh.
+
+    Previous version made separate option-chain snapshot calls for:
+        1) live spot / live chain
+        2) local range
+        3) wide range
+
+    This version fetches the wide range once, then derives the local range,
+    GEX, DEX, VEX, walls, OI Key, and flow curves from that same snapshot.
+    """
     if weights is None:
         weights = EXPIRATION_WEIGHTS
 
-    live_spot, expirations_live, _, _, live_strike_step = get_weighted_option_data_polygon(
+    # Anchor controls the strike range. The dashboard passes the last OI-refresh
+    # anchor as fixed_spot. If fixed_spot is missing, options_common falls back
+    # to the latest yfinance spot only to choose the query range.
+    anchor_hint = float(fixed_spot) if fixed_spot is not None else None
+
+    (
+        returned_spot,
+        expirations,
+        wide_calls,
+        wide_puts,
+        strike_step,
+        meta,
+    ) = get_weighted_option_data_polygon(
         ticker_symbol=ticker_symbol,
         weights=weights,
-        fixed_spot=None,
-        max_distance=max_distance,
+        fixed_spot=anchor_hint,
+        max_distance=float(max_distance) * 4.0,
+        return_metadata=True,
     )
 
-    anchor_spot = float(fixed_spot) if fixed_spot is not None else float(live_spot)
-
-    _, expirations, combined_calls, combined_puts, strike_step = get_weighted_option_data_polygon(
-        ticker_symbol=ticker_symbol,
-        weights=weights,
-        fixed_spot=anchor_spot,
-        max_distance=max_distance,
+    anchor_spot = float(fixed_spot) if fixed_spot is not None else float(returned_spot)
+    live_spot = float(
+        meta.get("massive_underlying_spot")
+        or meta.get("exposure_spot")
+        or returned_spot
+        or anchor_spot
     )
+    exposure_spot = float(meta.get("exposure_spot") or live_spot)
 
-    local_calls = filter_local_calls(combined_calls, anchor_spot, max_distance, strike_step=strike_step)
-    local_puts = filter_local_puts(combined_puts, anchor_spot, max_distance, strike_step=strike_step)
+    # Local range is derived from the same wide snapshot, not from a second API call.
+    local_calls = filter_local_calls(wide_calls, anchor_spot, max_distance, strike_step=strike_step)
+    local_puts = filter_local_puts(wide_puts, anchor_spot, max_distance, strike_step=strike_step)
 
     top_resistances = local_calls.sort_values("weighted_gex", ascending=False).head(num_levels).reset_index(drop=True)
     top_supports = local_puts.sort_values("weighted_gex", ascending=True).head(num_levels).reset_index(drop=True)
     top_vex_resistances = local_calls.sort_values("weighted_vex", ascending=False).head(num_levels).reset_index(drop=True)
     top_vex_supports = local_puts.sort_values("weighted_vex", ascending=True).head(num_levels).reset_index(drop=True)
-
-    _, _, wide_calls, wide_puts, wide_strike_step = get_weighted_option_data_polygon(
-        ticker_symbol=ticker_symbol,
-        weights=weights,
-        fixed_spot=anchor_spot,
-        max_distance=max_distance * 4,
-    )
 
     combined_all = build_combined_curve(wide_calls, wide_puts)
     gamma_flip = estimate_gamma_flip(combined_all[["strike", "weighted_gex"]].copy()) if not combined_all.empty else None
@@ -274,7 +293,9 @@ def get_gamma_levels(
         if not global_curve.empty:
             gamma_key_global = float(global_curve.loc[global_curve["abs_weighted_gex"].idxmax(), "strike"])
 
-    local_curve = combined_all[(combined_all["strike"] >= search_min) & (combined_all["strike"] <= search_max)].copy()
+    local_curve = combined_all[
+        (combined_all["strike"] >= search_min) & (combined_all["strike"] <= search_max)
+    ].copy()
 
     gamma_key_local = None
     if not local_curve.empty:
@@ -286,12 +307,6 @@ def get_gamma_levels(
     key_level = gamma_key_local if gamma_key_local is not None else gamma_key_global
     regime = infer_gamma_regime_from_net_gex(float(live_spot), gamma_flip, total_net_gex)
 
-    # Wall logic must match the OI chart:
-    # Call Wall = strike with the largest Call OI anywhere in the visible local strike range.
-    # Put Wall  = strike with the largest Put OI anywhere in the visible local strike range.
-    # Do NOT use filter_local_calls/filter_local_puts here because those only keep
-    # calls above spot and puts below spot. That can make the wall line disagree
-    # with the OI chart when the biggest call/put concentration is on the other side of spot.
     def _wall_from_curve_column(curve_df: pd.DataFrame, oi_column: str):
         if curve_df is None or curve_df.empty or oi_column not in curve_df.columns:
             return None
@@ -327,17 +342,32 @@ def get_gamma_levels(
     def safe_cols(df, cols):
         if df is None or df.empty:
             return pd.DataFrame(columns=cols)
+        df = df.copy()
         for c in cols:
             if c not in df.columns:
                 df[c] = 0.0
         return df[cols]
+
+    oi_curve_cols = [
+        "strike",
+        "weighted_open_interest",
+        "total_open_interest",
+        "weighted_volume",
+        "total_volume",
+        "call_weighted_oi",
+        "put_weighted_oi",
+        "call_weighted_volume",
+        "put_weighted_volume",
+        "call_total_volume",
+        "put_total_volume",
+    ]
 
     return {
         "model": "GAMMA",
         "ticker": ticker_symbol,
         "spot": round(float(live_spot), 2),
         "anchor_spot": round(float(anchor_spot), 2),
-        "exposure_spot": round(float(live_spot), 2),
+        "exposure_spot": round(float(exposure_spot), 2),
         "strike_step": float(strike_step),
         "expirations_used": expirations,
         "weights_used": weights,
@@ -353,6 +383,8 @@ def get_gamma_levels(
         "total_net_gex": total_net_gex,
         "total_net_vex": total_net_vex,
         "total_net_dex": total_net_dex,
+        "api_mode": "single_option_chain_snapshot_per_ticker",
+        "snapshot_query_range": [meta.get("strike_gte"), meta.get("strike_lte")],
         "flip_source": "wide_scan" if gamma_flip is not None else "net_gex_proxy",
         "top_resistances": safe_cols(top_resistances, base_top_cols),
         "top_supports": safe_cols(top_supports, base_top_cols),
@@ -360,18 +392,6 @@ def get_gamma_levels(
         "top_vex_supports": safe_cols(top_vex_supports, base_top_cols),
         "gex_curve": local_curve.to_dict(orient="records"),
         "dex_curve": local_curve[["strike", "weighted_dex", "total_dex"]].to_dict(orient="records") if not local_curve.empty else [],
-        "oi_curve": local_curve[[
-            "strike",
-            "weighted_open_interest",
-            "total_open_interest",
-            "weighted_volume",
-            "total_volume",
-            "call_weighted_oi",
-            "put_weighted_oi",
-            "call_weighted_volume",
-            "put_weighted_volume",
-            "call_total_volume",
-            "put_total_volume",
-        ]].to_dict(orient="records") if not local_curve.empty else [],
+        "oi_curve": local_curve[oi_curve_cols].to_dict(orient="records") if not local_curve.empty else [],
         "gex_curve_wide": combined_all.to_dict(orient="records"),
     }

@@ -78,6 +78,69 @@ def infer_strike_step(chain_df: pd.DataFrame, ticker_symbol: str) -> float:
     return normalize_strike_step(raw_step, ticker_symbol)
 
 
+
+def _safe_float(value):
+    try:
+        if value is None:
+            return None
+        value = float(value)
+        if pd.isna(value) or value <= 0:
+            return None
+        return value
+    except Exception:
+        return None
+
+
+def extract_massive_underlying_price(snapshot_dict: dict):
+    """
+    Extract Massive's underlying asset price from an option-chain snapshot row.
+
+    Massive's normal field is expected to be:
+        underlying_asset.price
+
+    The fallback paths below make the dashboard more robust if the client object
+    shape changes slightly.
+    """
+    if not isinstance(snapshot_dict, dict):
+        return None
+
+    underlying = snapshot_dict.get("underlying_asset", {}) or {}
+    candidate_values = []
+
+    if isinstance(underlying, dict):
+        candidate_values.extend(
+            [
+                underlying.get("price"),
+                underlying.get("last_price"),
+                underlying.get("close"),
+                underlying.get("value"),
+            ]
+        )
+
+        day = underlying.get("day", {}) or {}
+        last_trade = underlying.get("last_trade", {}) or {}
+        last_quote = underlying.get("last_quote", {}) or {}
+
+        if isinstance(day, dict):
+            candidate_values.extend([day.get("close"), day.get("c")])
+
+        if isinstance(last_trade, dict):
+            candidate_values.extend([last_trade.get("price"), last_trade.get("p")])
+
+        if isinstance(last_quote, dict):
+            bid = _safe_float(last_quote.get("bid") or last_quote.get("bid_price"))
+            ask = _safe_float(last_quote.get("ask") or last_quote.get("ask_price"))
+            if bid is not None and ask is not None:
+                candidate_values.append((bid + ask) / 2.0)
+
+    for value in candidate_values:
+        parsed = _safe_float(value)
+        if parsed is not None:
+            return parsed
+
+    return None
+
+
 def get_api_key() -> str:
     api_key = os.getenv("POLYGON_API_KEY") or os.getenv("MASSIVE_API_KEY")
     if not api_key:
@@ -231,6 +294,7 @@ def get_option_chain_snapshot_df(
         details = d.get("details", {}) or {}
         greeks = d.get("greeks", {}) or {}
         day = d.get("day", {}) or {}
+        underlying_price = extract_massive_underlying_price(d)
 
         strike = details.get("strike_price")
         expiration_date = details.get("expiration_date")
@@ -256,6 +320,7 @@ def get_option_chain_snapshot_df(
                 "gamma": float(greeks.get("gamma") or 0.0),
                 "vega": float(greeks.get("vega") or 0.0),
                 "delta": delta,
+                "underlying_price": underlying_price,
                 "day_volume": float(day.get("volume") or 0.0),
             }
         )
@@ -279,27 +344,58 @@ def get_weighted_option_data_polygon(
     fixed_spot: float | None = None,
     max_distance: float | None = None,
     dex_spot: float | None = None,
+    return_metadata: bool = False,
 ):
-    # spot controls the option-chain search range and GEX anchor.
-    # dex_pricing_spot controls Notional DEX dollars.
-    #
-    # This lets the dashboard keep OI/GEX levels anchored to the fixed opening spot,
-    # while DEX dollars can update using the live/current spot.
-    spot = float(fixed_spot) if fixed_spot is not None else get_current_spot_price(ticker_symbol)
-    dex_pricing_spot = float(dex_spot) if dex_spot is not None else float(spot)
+    """
+    Fetches ONE option-chain snapshot for the requested ticker/range and builds
+    all OI/GEX/VEX/DEX aggregates from that same snapshot.
+
+    Important spots:
+    - query_spot: used only to choose the option-chain strike range.
+    - exposure_spot: used for GEX dollars and Notional DEX dollars.
+      Preferred source is Massive's underlying_asset.price from the snapshot.
+    - returned_spot: kept backward compatible. If fixed_spot is passed, this
+      returns the anchor spot so old OI/range logic does not break.
+
+    return_metadata=True adds:
+        query_spot, exposure_spot, massive_underlying_spot, returned_spot
+    without changing old callers that expect the original 5-item tuple.
+    """
+    query_spot = float(fixed_spot) if fixed_spot is not None else get_current_spot_price(ticker_symbol)
     provisional_step = get_default_strike_step(ticker_symbol)
 
     strike_gte = None
     strike_lte = None
     if max_distance is not None:
         query_distance_points = float(max_distance) * provisional_step * 1.5
-        strike_gte = max(0.01, spot - query_distance_points)
-        strike_lte = spot + query_distance_points
+        strike_gte = max(0.01, query_spot - query_distance_points)
+        strike_lte = query_spot + query_distance_points
 
+    # This is the only Massive option-chain snapshot call made by this function.
     chain_df = get_option_chain_snapshot_df(
         ticker_symbol=ticker_symbol,
         strike_price_gte=strike_gte,
         strike_price_lte=strike_lte,
+    )
+
+    massive_underlying_spot = None
+    if "underlying_price" in chain_df.columns:
+        underlying_prices = pd.to_numeric(chain_df["underlying_price"], errors="coerce").dropna()
+        underlying_prices = underlying_prices[underlying_prices > 0]
+        if not underlying_prices.empty:
+            massive_underlying_spot = float(underlying_prices.iloc[0])
+
+    if massive_underlying_spot is not None:
+        exposure_spot = float(massive_underlying_spot)
+    elif dex_spot is not None:
+        exposure_spot = float(dex_spot)
+    else:
+        exposure_spot = float(query_spot)
+
+    returned_spot = (
+        float(massive_underlying_spot)
+        if fixed_spot is None and massive_underlying_spot is not None
+        else float(query_spot)
     )
 
     strike_step = infer_strike_step(chain_df, ticker_symbol)
@@ -311,35 +407,26 @@ def get_weighted_option_data_polygon(
     chain_df["weighted_open_interest"] = chain_df["open_interest"] * chain_df["weight"]
     chain_df["weighted_volume"] = chain_df["day_volume"] * chain_df["weight"]
 
+    # GEX dollars. Uses Massive underlying price when available.
     chain_df["gex"] = 0.0
     chain_df.loc[chain_df["contract_type"] == "call", "gex"] = (
-        chain_df["gamma"] * chain_df["open_interest"] * 100.0 * (spot ** 2) * 0.01
+        chain_df["gamma"] * chain_df["open_interest"] * 100.0 * (exposure_spot ** 2) * 0.01
     )
     chain_df.loc[chain_df["contract_type"] == "put", "gex"] = (
-        -chain_df["gamma"] * chain_df["open_interest"] * 100.0 * (spot ** 2) * 0.01
+        -chain_df["gamma"] * chain_df["open_interest"] * 100.0 * (exposure_spot ** 2) * 0.01
     )
     chain_df["weighted_gex"] = chain_df["gex"] * chain_df["weight"]
 
+    # VEX does not use spot.
     chain_df["vex"] = chain_df["vega"] * chain_df["open_interest"] * 100.0
-    chain_df.loc[chain_df["contract_type"] == "put", "vex"] = -chain_df.loc[chain_df["contract_type"] == "put", "vex"]
+    chain_df.loc[chain_df["contract_type"] == "put", "vex"] = -chain_df.loc[
+        chain_df["contract_type"] == "put", "vex"
+    ]
     chain_df["weighted_vex"] = chain_df["vex"] * chain_df["weight"]
 
-    # Notional DEX ($)
-    # DEX dollars = delta * open_interest * contract_multiplier * live/current spot
-    # Weighted DEX dollars = DEX dollars * expiration_weight
-    chain_df["dex"] = (
-        chain_df["delta"]
-        * chain_df["open_interest"]
-        * 100.0
-        * dex_pricing_spot
-    )
-    chain_df["weighted_dex"] = (
-        chain_df["delta"]
-        * chain_df["open_interest"]
-        * 100.0
-        * dex_pricing_spot
-        * chain_df["weight"]
-    )
+    # Notional DEX dollars. Uses Massive underlying price when available.
+    chain_df["dex"] = chain_df["delta"] * chain_df["open_interest"] * 100.0 * exposure_spot
+    chain_df["weighted_dex"] = chain_df["dex"] * chain_df["weight"]
 
     calls = chain_df[chain_df["contract_type"] == "call"].copy()
     puts = chain_df[chain_df["contract_type"] == "put"].copy()
@@ -359,10 +446,32 @@ def get_weighted_option_data_polygon(
         weighted_dex=("weighted_dex", "sum"),
     )
 
-    combined_calls = calls.groupby("strike", as_index=False).agg(**agg_map).sort_values("strike").reset_index(drop=True)
-    combined_puts = puts.groupby("strike", as_index=False).agg(**agg_map).sort_values("strike").reset_index(drop=True)
+    combined_calls = (
+        calls.groupby("strike", as_index=False)
+        .agg(**agg_map)
+        .sort_values("strike")
+        .reset_index(drop=True)
+    )
+    combined_puts = (
+        puts.groupby("strike", as_index=False)
+        .agg(**agg_map)
+        .sort_values("strike")
+        .reset_index(drop=True)
+    )
 
-    return spot, expirations, combined_calls, combined_puts, float(strike_step)
+    metadata = {
+        "query_spot": float(query_spot),
+        "returned_spot": float(returned_spot),
+        "massive_underlying_spot": massive_underlying_spot,
+        "exposure_spot": float(exposure_spot),
+        "strike_gte": strike_gte,
+        "strike_lte": strike_lte,
+    }
+
+    if return_metadata:
+        return returned_spot, expirations, combined_calls, combined_puts, float(strike_step), metadata
+
+    return returned_spot, expirations, combined_calls, combined_puts, float(strike_step)
 
 
 def get_local_range(spot: float, max_distance: float, strike_step: float = 1.0):
