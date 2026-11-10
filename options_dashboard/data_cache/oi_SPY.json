@@ -1,11 +1,11 @@
 {
   "model": "OI",
   "ticker": "SPY",
-  "spot": 752.61,
+  "spot": 749.33,
   "expirations_used": [
-    "2026-11-09",
     "2026-11-10",
-    "2026-11-11"
+    "2026-11-11",
+    "2026-11-12"
   ],
   "weights_used": [
     0.5,
@@ -13,223 +13,223 @@
     0.2
   ],
   "search_range": [
-    722.61,
-    782.61
+    719.33,
+    779.33
   ],
-  "key_level": 753.0,
+  "key_level": 749.0,
   "top_resistances": [
     {
+      "strike": 750.0,
+      "weighted_open_interest": 5885.0,
+      "total_open_interest": 13711,
+      "weighted_volume": 258597.6,
+      "total_volume": 541094.0
+    },
+    {
+      "strike": 752.0,
+      "weighted_open_interest": 3308.0,
+      "total_open_interest": 7778,
+      "weighted_volume": 218808.7,
+      "total_volume": 449696.0
+    },
+    {
       "strike": 753.0,
-      "weighted_open_interest": 3446.9,
-      "total_open_interest": 9260,
-      "weighted_volume": 300963.1,
-      "total_volume": 627113.0
+      "weighted_open_interest": 4524.4,
+      "total_open_interest": 9981,
+      "weighted_volume": 123509.9,
+      "total_volume": 256293.0
     },
     {
       "strike": 754.0,
-      "weighted_open_interest": 2095.6,
-      "total_open_interest": 5269,
-      "weighted_volume": 260822.6,
-      "total_volume": 544261.0
+      "weighted_open_interest": 3711.8,
+      "total_open_interest": 8193,
+      "weighted_volume": 85397.6,
+      "total_volume": 181606.0
     },
     {
       "strike": 755.0,
-      "weighted_open_interest": 4436.0,
-      "total_open_interest": 11079,
-      "weighted_volume": 265958.9,
-      "total_volume": 553965.0
+      "weighted_open_interest": 4283.4,
+      "total_open_interest": 10213,
+      "weighted_volume": 106954.5,
+      "total_volume": 227601.0
     },
     {
       "strike": 757.0,
-      "weighted_open_interest": 3231.4,
-      "total_open_interest": 7489,
-      "weighted_volume": 177676.1,
-      "total_volume": 367118.0
+      "weighted_open_interest": 2916.0,
+      "total_open_interest": 6934,
+      "weighted_volume": 41815.7,
+      "total_volume": 92227.0
+    },
+    {
+      "strike": 758.0,
+      "weighted_open_interest": 3569.0,
+      "total_open_interest": 8118,
+      "weighted_volume": 53884.8,
+      "total_volume": 116873.0
     },
     {
       "strike": 760.0,
-      "weighted_open_interest": 6154.2,
-      "total_open_interest": 15188,
-      "weighted_volume": 36093.2,
-      "total_volume": 94963.0
+      "weighted_open_interest": 6205.7,
+      "total_open_interest": 15427,
+      "weighted_volume": 37029.3,
+      "total_volume": 83919.0
+    },
+    {
+      "strike": 761.0,
+      "weighted_open_interest": 3112.3,
+      "total_open_interest": 6943,
+      "weighted_volume": 18220.2,
+      "total_volume": 40725.0
     },
     {
       "strike": 762.0,
-      "weighted_open_interest": 2663.9,
-      "total_open_interest": 5963,
-      "weighted_volume": 14178.5,
-      "total_volume": 39920.0
-    },
-    {
-      "strike": 763.0,
-      "weighted_open_interest": 3170.9,
-      "total_open_interest": 7853,
-      "weighted_volume": 15309.599999999999,
-      "total_volume": 39108.0
+      "weighted_open_interest": 3804.1,
+      "total_open_interest": 8430,
+      "weighted_volume": 18611.399999999998,
+      "total_volume": 45536.0
     },
     {
       "strike": 765.0,
-      "weighted_open_interest": 4202.2,
-      "total_open_interest": 12082,
-      "weighted_volume": 18888.4,
-      "total_volume": 51001.0
+      "weighted_open_interest": 6517.5,
+      "total_open_interest": 16242,
+      "weighted_volume": 8023.9,
+      "total_volume": 19110.0
     },
     {
       "strike": 766.0,
-      "weighted_open_interest": 2483.8,
-      "total_open_interest": 6307,
-      "weighted_volume": 7208.5,
-      "total_volume": 23071.0
+      "weighted_open_interest": 2920.2,
+      "total_open_interest": 6859,
+      "weighted_volume": 3704.2,
+      "total_volume": 8479.0
     },
     {
-      "strike": 767.0,
-      "weighted_open_interest": 3575.3,
-      "total_open_interest": 8534,
-      "weighted_volume": 5035.6,
-      "total_volume": 15195.0
+      "strike": 768.0,
+      "weighted_open_interest": 2897.8,
+      "total_open_interest": 6770,
+      "weighted_volume": 1981.0,
+      "total_volume": 4613.0
     },
     {
       "strike": 770.0,
-      "weighted_open_interest": 8120.3,
-      "total_open_interest": 23830,
-      "weighted_volume": 4255.3,
-      "total_volume": 16904.0
-    },
-    {
-      "strike": 772.0,
-      "weighted_open_interest": 2206.8,
-      "total_open_interest": 6265,
-      "weighted_volume": 1128.9,
-      "total_volume": 4387.0
+      "weighted_open_interest": 8351.8,
+      "total_open_interest": 21275,
+      "weighted_volume": 4322.7,
+      "total_volume": 10605.0
     },
     {
       "strike": 775.0,
-      "weighted_open_interest": 5728.0,
-      "total_open_interest": 16696,
-      "weighted_volume": 1133.0,
-      "total_volume": 4143.0
-    },
-    {
-      "strike": 776.0,
-      "weighted_open_interest": 1964.4,
-      "total_open_interest": 5546,
-      "weighted_volume": 1163.9,
-      "total_volume": 3869.0
-    },
-    {
-      "strike": 780.0,
-      "weighted_open_interest": 4301.1,
-      "total_open_interest": 11992,
-      "weighted_volume": 1066.5,
-      "total_volume": 4968.0
+      "weighted_open_interest": 6737.6,
+      "total_open_interest": 18972,
+      "weighted_volume": 218.9,
+      "total_volume": 777.0
     }
   ],
   "top_supports": [
     {
-      "strike": 750.0,
-      "weighted_open_interest": 2788.6,
-      "total_open_interest": 8287,
-      "weighted_volume": 218061.6,
-      "total_volume": 467746.0
+      "strike": 749.0,
+      "weighted_open_interest": 2382.3,
+      "total_open_interest": 5300,
+      "weighted_volume": 133308.0,
+      "total_volume": 278132.0
+    },
+    {
+      "strike": 748.0,
+      "weighted_open_interest": 3743.0,
+      "total_open_interest": 8262,
+      "weighted_volume": 236513.1,
+      "total_volume": 493826.0
+    },
+    {
+      "strike": 747.0,
+      "weighted_open_interest": 2969.2,
+      "total_open_interest": 8397,
+      "weighted_volume": 284048.8,
+      "total_volume": 587224.0
+    },
+    {
+      "strike": 746.0,
+      "weighted_open_interest": 3735.8,
+      "total_open_interest": 8079,
+      "weighted_volume": 276767.3,
+      "total_volume": 567526.0
     },
     {
       "strike": 745.0,
-      "weighted_open_interest": 3007.3,
-      "total_open_interest": 7176,
-      "weighted_volume": 90154.6,
-      "total_volume": 198332.0
+      "weighted_open_interest": 4736.0,
+      "total_open_interest": 10653,
+      "weighted_volume": 310508.8,
+      "total_volume": 645367.0
+    },
+    {
+      "strike": 744.0,
+      "weighted_open_interest": 5781.3,
+      "total_open_interest": 23929,
+      "weighted_volume": 168141.4,
+      "total_volume": 346926.0
     },
     {
       "strike": 740.0,
-      "weighted_open_interest": 4654.6,
-      "total_open_interest": 11445,
-      "weighted_volume": 57009.9,
-      "total_volume": 137676.0
+      "weighted_open_interest": 9393.3,
+      "total_open_interest": 22208,
+      "weighted_volume": 114310.5,
+      "total_volume": 243756.0
     },
     {
       "strike": 738.0,
-      "weighted_open_interest": 2203.3,
-      "total_open_interest": 5626,
-      "weighted_volume": 20427.5,
-      "total_volume": 47854.0
+      "weighted_open_interest": 3286.5,
+      "total_open_interest": 8311,
+      "weighted_volume": 93010.7,
+      "total_volume": 190645.0
     },
     {
       "strike": 737.0,
-      "weighted_open_interest": 1891.7,
-      "total_open_interest": 4321,
-      "weighted_volume": 38793.1,
-      "total_volume": 92692.0
-    },
-    {
-      "strike": 736.0,
-      "weighted_open_interest": 2016.2,
-      "total_open_interest": 5143,
-      "weighted_volume": 17300.5,
-      "total_volume": 37299.0
+      "weighted_open_interest": 3054.6,
+      "total_open_interest": 6738,
+      "weighted_volume": 62776.3,
+      "total_volume": 132726.0
     },
     {
       "strike": 735.0,
-      "weighted_open_interest": 4702.9,
-      "total_open_interest": 11680,
-      "weighted_volume": 58646.5,
-      "total_volume": 159034.0
+      "weighted_open_interest": 35238.9,
+      "total_open_interest": 73770,
+      "weighted_volume": 50590.1,
+      "total_volume": 109120.0
     },
     {
       "strike": 734.0,
-      "weighted_open_interest": 4220.8,
-      "total_open_interest": 12612,
-      "weighted_volume": 13459.6,
-      "total_volume": 29434.0
-    },
-    {
-      "strike": 733.0,
-      "weighted_open_interest": 2844.8,
-      "total_open_interest": 6303,
-      "weighted_volume": 10267.3,
-      "total_volume": 22543.0
+      "weighted_open_interest": 5421.1,
+      "total_open_interest": 11309,
+      "weighted_volume": 18275.7,
+      "total_volume": 39932.0
     },
     {
       "strike": 732.0,
-      "weighted_open_interest": 3140.8,
-      "total_open_interest": 7062,
-      "weighted_volume": 8842.1,
-      "total_volume": 21317.0
+      "weighted_open_interest": 1922.6999999999998,
+      "total_open_interest": 5088,
+      "weighted_volume": 8839.8,
+      "total_volume": 22298.0
     },
     {
       "strike": 730.0,
-      "weighted_open_interest": 10703.4,
-      "total_open_interest": 23071,
-      "weighted_volume": 26684.5,
-      "total_volume": 64558.0
-    },
-    {
-      "strike": 729.0,
-      "weighted_open_interest": 1889.5,
-      "total_open_interest": 4514,
-      "weighted_volume": 6839.3,
-      "total_volume": 15318.0
-    },
-    {
-      "strike": 728.0,
-      "weighted_open_interest": 2316.4,
-      "total_open_interest": 5125,
-      "weighted_volume": 5711.7,
-      "total_volume": 13474.0
-    },
-    {
-      "strike": 727.0,
-      "weighted_open_interest": 1848.3,
-      "total_open_interest": 4385,
-      "weighted_volume": 3516.5,
-      "total_volume": 8765.0
+      "weighted_open_interest": 9725.3,
+      "total_open_interest": 25621,
+      "weighted_volume": 18877.899999999998,
+      "total_volume": 48253.0
     },
     {
       "strike": 725.0,
-      "weighted_open_interest": 20548.5,
-      "total_open_interest": 42881,
-      "weighted_volume": 11162.1,
-      "total_volume": 28773.0
+      "weighted_open_interest": 5471.5,
+      "total_open_interest": 13872,
+      "weighted_volume": 3995.0,
+      "total_volume": 10141.0
+    },
+    {
+      "strike": 720.0,
+      "weighted_open_interest": 4156.7,
+      "total_open_interest": 12974,
+      "weighted_volume": 2319.1,
+      "total_volume": 6954.0
     }
   ],
-  "refreshed_at_ny": "2026-11-09T18:07:27.184588-05:00"
+  "refreshed_at_ny": "2026-11-10T15:34:46.923362-05:00"
 }
